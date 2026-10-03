@@ -119,8 +119,8 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
   app.post('/telegram/oidc', async (request, reply) => {
     const parsed = z
       .object({
-        idToken: z.string().min(20).optional(),
-        id_token: z.string().min(20).optional(),
+        idToken: z.string().min(10).optional(),
+        id_token: z.string().min(10).optional(),
         nonce: z.string().max(200).optional(),
       })
       .safeParse(request.body);
