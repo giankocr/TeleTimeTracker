@@ -111,6 +111,7 @@ export function formatLocal(date: Date, timeZone: string, withTime = true): stri
 /** Duracion legible: "1h 24m" */
 export function humanDuration(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
+  if (s === 0) return 'unos segundos';
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   if (h && m) return `${h}h ${m}m`;

@@ -166,6 +166,7 @@ Tablas de apoyo: **Pause** (pausas con motivo y duración), **EntryTag** (etique
 | `/reporte [hoy\|ayer\|semana\|mes]` | Resumen de horas del periodo |
 | `/pendientes` | Lista de tareas pendientes (backlog) |
 | `/pausar`, `/retomar`, `/terminar`, `/cancelar` | Control del cronómetro |
+| `/tiempo TAREA` | **Tiempo consumido** en una tarea o proyecto (`/tiempo login`, `/tiempo Portal Web`) |
 | `/misproyectos`, `/ayuda` | Proyectos disponibles y ayuda |
 
 También hay un **teclado persistente** (Estado · Pendientes · Pausar · Retomar · Terminar) y **botones inline** en cada confirmación.
@@ -299,6 +300,39 @@ Igual que en NosotrosConstruimos, la pantalla de login ofrece **tres formas de e
 - Solo se acepta un contacto **propio** (`contact.user_id === from.id`): Telegram permite reenviar la agenda de otra persona.
 - Todo intento (acertado o fallido) queda en `audit_logs`; los OTP se auditan enmascarados (`+573001•••567`).
 
+### Alta guiada: crear cliente y proyecto sin salir del chat
+
+Si el trabajador empieza una tarea y el **cliente o el proyecto no existen**, el bot no se limita a rechazarlo: le acompaña para crearlos y **arranca el cronómetro con lo que ya había dicho**. Todo lo que el usuario mencionó (proyecto, cliente, tipo de tarea y título) se conserva para no volver a preguntarlo.
+
+```
+Trabajador: Iniciando tarea de maquetación del login para el cliente Acme Corp
+
+Bot: 📁 Todavía no hay proyectos ni clientes.
+     ¿Cómo se llama el cliente?            ← o lista de proyectos + «➕ Crear proyecto nuevo»
+
+Trabajador: Acme Corp
+
+Bot: ✅ Cliente Acme Corp creado.
+     ¿Cómo se llama el proyecto?
+
+Trabajador: Portal Web
+
+Bot: ✅ Proyecto Portal Web creado en Acme Corp.
+     ▶️ Tarea iniciada
+     🟢 maquetacion del login · Portal Web · Acme Corp · Maquetación
+```
+
+Detalles del comportamiento:
+
+- Si el cliente **ya existe** no se duplica: se reutiliza (y se reactiva si estaba desactivado), igual que el proyecto.
+- El creador queda como **miembro** del proyecto para que lo vea en sus próximos mensajes.
+- Si el usuario se equivoca con el proyecto pero ya tiene otros, el bot le ofrece la **lista con botones** (`➕ Crear proyecto nuevo` / `➕ Crear cliente y proyecto`).
+- El flujo se puede **cancelar** escribiendo `cancelar`. Caduca a los 15 minutos.
+- Los datos que se crean son reales: aparecen en el panel web (Clientes / Proyectos) y el administrador puede completarlos después (presupuesto, tarifas, repos de GitHub).
+- La respuesta a «¿en qué vas a trabajar?» se distingue de una tarea nueva mientras el flujo está activo, así que el usuario solo escribe el nombre.
+
+**Tiempo consumido:** `humanDuration` muestra segundos, minutos u horas según corresponda (`45s`, `1m 30s`, `2h`), y `/tiempo <texto>` suma **todos** los registros que coincidan con ese texto (por título, descripción, proyecto o cliente), agrupados por proyecto y con los últimos registros. `/estado` añade además el acumulado del proyecto de la tarea en curso. Las tareas nuevas reconocen el proyecto ya creado sin volver a preguntar.
+
 ### Alertas proactivas
 - **Inactividad**: dentro de la jornada, si no hay tarea corriendo (o una pausa dura demasiado) avisa por Telegram. Máximo 1 aviso por hora por usuario.
 - **Digest diario** (cron configurable, por defecto 08:00 L-V): horas del día anterior, desglose por proyecto y pendientes.
@@ -410,6 +444,13 @@ DATABASE_URL=mysql://USUARIO:PASSWORD@HOST:3306/NOMBRE_DB
 5. Ejecuta el seed (roles, admin, tipos de tarea) y levanta el panel.
 
 > ¿Por qué hay un aplicador propio y no `prisma migrate deploy`? Prisma busca **siempre** el directorio `migrations/` junto al esquema y compara su `migration_lock.toml` con el provider del esquema: al convivir los juegos de SQLite y MySQL, `migrate deploy` falla con `P3019` (*datasource provider `mysql` does not match the one specified in the migration_lock.toml, `sqlite`*). El aplicador (`server/src/db/migrator.ts`) ejecuta el mismo SQL y mantiene el historial en `_app_migrations`. Para desarrollo local con SQLite, `prisma migrate dev` sigue funcionando normalmente.
+
+**Requisito del usuario de MySQL:** debe usar el plugin **`caching_sha2_password`** (el estándar de MySQL 8). Con `sha256_password` Prisma falla con `Unknown authentication plugin 'sha256_password'`. Para corregirlo:
+
+```sql
+ALTER USER 'tu_usuario'@'%' IDENTIFIED WITH caching_sha2_password BY 'tu_password';
+FLUSH PRIVILEGES;
+```
 
 > ⚠️ **PostgreSQL no está soportado de serie**: el SQL de las migraciones es específico del motor y solo se incluyen los juegos de SQLite y MySQL.
 
@@ -680,6 +721,7 @@ El proyecto se validó de extremo a extremo:
 - **Acceso con Telegram**: firma válida → JWT + RBAC; firma manipulada, autorización de 2 h y Telegram sin vincular → rechazados (401/403) y auditados. Formatos de hash `#tgAuthResult` y campos directos verificados.
 - **Widget oficial (legacy)**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
 - **Login OIDC (vigente)**: `id_token` válido → sesión y RBAC; firma ajena, `aud` o `iss` incorrectos, token expirado y `alg: none` → rechazados con el código de error correspondiente; `nonce` verificado; el `phone_number` del token se guarda en el perfil; cabecera `Cross-Origin-Opener-Policy: same-origin-allow-popups` presente (sin ella el popup de Telegram no comunica).
+- **Alta guiada por el bot**: flujo verificado de extremo a extremo (catálogo vacío → el bot pide cliente → crea `Acme Corp` → pide proyecto → crea `Portal Web` → arranca el cronómetro con el título, el tipo y el cliente correctos → `/tiempo` devuelve el acumulado → una segunda tarea reconoce el proyecto sin preguntar).
 - **MySQL de punta a punta desde la imagen**: partiendo del cliente generado para SQLite (como en el Dockerfile) y con `DATABASE_URL` de MySQL, el arranque cambia el cliente solo, aplica las migraciones y siembra; un segundo arranque no re-aplica nada, y una base con tablas preexistentes se adopta sin recrearlas.
 - **MySQL**: verificado contra un servidor MySQL 8.4 real: migración inicial (17 tablas), seed automático, arranque de la app y flujo completo de API (login, RBAC, CRUD, cronómetro start→pause→resume→stop con pausas descontadas, registro manual, dashboard, CSV, auditoría). Tipos nativos aplicados (`description` → `TEXT`, `permissions` → `VARCHAR(600)`).
 - **Acceso con teléfono + OTP**: teléfono no registrado (404), código incorrecto (401), anti-spam de 60 s (429), código correcto (200 con sesión) y reutilización del mismo código (401).

@@ -25,6 +25,22 @@ export const entryButtons = (entryId: string): ReplyMarkup => ({
   ],
 });
 
+/**
+ * Teclado del alta guiada: proyectos existentes + botones para crear.
+ * Se usa cuando el bot no reconoce el proyecto que pidio el trabajador.
+ */
+export const projectActionsKeyboard = (
+  projects: Array<{ id: string; name: string; clientName: string }>,
+): ReplyMarkup => {
+  const rows: InlineKeyboardButton[][] = [];
+  for (const project of projects.slice(0, 8)) {
+    rows.push([{ text: `${project.name} · ${project.clientName}`.slice(0, 60), callback_data: `pick:${project.id}` }]);
+  }
+  rows.push([{ text: '➕ Crear proyecto nuevo', callback_data: 'newproj:' }]);
+  rows.push([{ text: '➕ Crear cliente y proyecto', callback_data: 'newclient:' }]);
+  return { inline_keyboard: rows };
+};
+
 export const projectPicker = (items: Array<{ id: string; label: string }>): ReplyMarkup => ({
   inline_keyboard: chunkPairs(
     items.slice(0, 12).map((i) => ({ text: i.label, callback_data: `pick:${i.id}` })),
@@ -137,11 +153,16 @@ export function helpMessage(companyName: string, linked: boolean): string {
     '• "Cambia a la tarea de soporte del cliente Globex"',
     '• "Termine la tarea, ajuste el login y subi el fix"',
     '• "Reporte de hoy" · "Cuantas horas hice ayer"',
+    '• "Cuanto llevo en el proyecto Portal Web"',
+    '',
+    '<b>¿No existe el cliente o el proyecto?</b> No pasa nada: te acompaño para',
+    'crearlos en el chat y arranco el cronómetro con lo que ya me dijiste.',
     '',
     '<b>Comandos:</b>',
     '/estado — que estas haciendo ahora',
     '/reporte [hoy|ayer|semana|mes] — resumen de horas',
     '/pendientes — lista de tareas pendientes',
+    '/tiempo TAREA — tiempo consumido en una tarea o proyecto',
     '/telefono — vincular compartiendo tu número',
     '/vincular CODIGO — vincula tu cuenta con el código del panel',
     '/cancelar — descarta la tarea en curso',

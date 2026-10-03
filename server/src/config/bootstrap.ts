@@ -135,6 +135,83 @@ function useBundledClient(engine: DbProfile['engine']): boolean {
   }
 }
 
+/**
+ * Aplica las migraciones de MySQL con el aplicador propio.
+ * Ver server/src/db/migrator.ts para el motivo (P3019 de Prisma).
+ */
+async function migrateWithRunner(profile: DbProfile): Promise<void> {
+  try {
+    const { runMigrations, splitStatements, discoverMigrations } = await import('../db/migrator');
+    const { prisma: db } = await import('../db/prisma');
+
+    // Tabla de control (sintaxis MySQL).
+    await db.$executeRawUnsafe(
+      'CREATE TABLE IF NOT EXISTS `_app_migrations` (' +
+        '`name` VARCHAR(191) NOT NULL, ' +
+        '`statements` INT NOT NULL DEFAULT 0, ' +
+        '`appliedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ' +
+        'PRIMARY KEY (`name`))',
+    );
+
+    // Base creada por una version anterior (o migrada desde SQLite) sin
+    // historial: se registran las migraciones como aplicadas sin re-ejecutarlas.
+    const existing = (await db.$queryRawUnsafe(
+      "SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('users','time_entries','roles')",
+    )) as Array<{ n: bigint | number }>;
+    if (Number(existing[0]?.n ?? 0) > 0) {
+      const registradas = new Set(
+        ((await db.$queryRawUnsafe('SELECT `name` FROM `_app_migrations`')) as Array<{ name: string }>).map((r) => r.name),
+      );
+      const faltantes = discoverMigrations(profile.migrations).filter((m) => !registradas.has(m.name));
+      if (faltantes.length) {
+        console.warn(
+          `[bootstrap] la base ya tiene tablas: se registran ${faltantes.length} migracion(es) como aplicadas sin re-ejecutarlas`,
+        );
+        for (const migracion of faltantes) {
+          await db.$executeRawUnsafe(
+            'INSERT INTO `_app_migrations` (`name`, `statements`) VALUES (?, ?)',
+            migracion.name,
+            0,
+          );
+        }
+      }
+    }
+
+    const result = await runMigrations({
+      migrationsDir: profile.migrations,
+      execute: async (sql) => {
+        // MySQL no admite varias sentencias en una llamada: se ejecutan una a una.
+        for (const statement of splitStatements(sql)) {
+          await db.$executeRawUnsafe(statement);
+        }
+      },
+      applied: async () => {
+        const rows = (await db.$queryRawUnsafe('SELECT `name` FROM `_app_migrations`')) as Array<{ name: string }>;
+        return new Set(rows.map((row) => row.name));
+      },
+      markApplied: async (name, statements) => {
+        await db.$executeRawUnsafe(
+          'INSERT INTO `_app_migrations` (`name`, `statements`) VALUES (?, ?)',
+          name,
+          statements,
+        );
+      },
+      log: console.log,
+    });
+
+    if (result.failed) {
+      console.error(`[bootstrap] migracion fallida: ${result.failed.name}`);
+      console.error(`   ${result.failed.error.split('\n')[0]}`);
+    } else {
+      console.log(
+        `[bootstrap] migraciones: ${result.applied.length} aplicadas, ${result.skipped.length} ya estaban`,
+      );
+    }
+  } catch (err) {
+    console.error('[bootstrap] no se pudieron aplicar las migraciones:', (err as Error).message);
+  }
+}
+
 export async function bootstrapDatabase(): Promise<void> {
   // Nunca lanzar por el directorio: el arranque ya lo reporto y seguimos.
   try {
@@ -175,86 +252,27 @@ export async function bootstrapDatabase(): Promise<void> {
 
 
   if (env.AUTO_MIGRATE) {
-    // Se usa el aplicador propio: `prisma migrate deploy` solo admite el
-    // directorio `migrations/` junto al esquema y choca con la convivencia de
-    // SQLite y MySQL (error P3019).
-    try {
-      const { runMigrations } = await import('../db/migrator');
-      const { prisma: db } = await import('../db/prisma');
-
-      await db.$executeRawUnsafe(
-        'CREATE TABLE IF NOT EXISTS `_app_migrations` (' +
-          '`name` VARCHAR(191) NOT NULL, ' +
-          '`statements` INT NOT NULL DEFAULT 0, ' +
-          '`appliedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ' +
-          'PRIMARY KEY (`name`))',
-      );
-
-      // Caso especial: base YA creada por una version anterior (o migrada desde
-      // SQLite) sin historial en `_app_migrations`. Si existen tablas del
-      // esquema, se marcan las migraciones como aplicadas en lugar de intentar
-      // recrearlas (fallaria con "table already exists").
-      const existing = (await db.$queryRawUnsafe(
-        "SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('users','time_entries','roles')",
-      )) as Array<{ n: bigint | number }>;
-      const schemaAlreadyExists = Number(existing[0]?.n ?? 0) > 0;
-      if (schemaAlreadyExists) {
-        const { discoverMigrations } = await import('../db/migrator');
-        const conocidas = (await db.$queryRawUnsafe(
-          'SELECT `name` FROM `_app_migrations`',
-        )) as Array<{ name: string }>;
-        const yaRegistradas = new Set(conocidas.map((row) => row.name));
-        const faltantes = discoverMigrations(profile.migrations).filter((m) => !yaRegistradas.has(m.name));
-        if (faltantes.length) {
-          console.warn(
-            `[bootstrap] la base ya tiene tablas: se registran ${faltantes.length} migracion(es) como aplicadas sin re-ejecutarlas`,
-          );
-          for (const migracion of faltantes) {
-            await db.$executeRawUnsafe(
-              'INSERT INTO `_app_migrations` (`name`, `statements`) VALUES (?, ?)',
-              migracion.name,
-              0,
-            );
-          }
+    if (profile.engine === 'mysql') {
+      // MySQL: se usa el aplicador propio porque `prisma migrate deploy` solo
+      // admite el directorio `migrations/` junto al esquema y choca con la
+      // convivencia de SQLite y MySQL (error P3019).
+      await migrateWithRunner(profile);
+    } else {
+      // SQLite (y otros): se usa el migrador oficial de Prisma, que si soporta
+      // este caso porque el esquema base y el directorio `migrations/` coinciden.
+      console.log('[bootstrap] aplicando migraciones (prisma migrate deploy)...');
+      const result = runPrisma(['migrate', 'deploy', '--schema', profile.schema]);
+      if (result.ok) {
+        console.log('[bootstrap] migraciones al dia');
+      } else {
+        console.warn('[bootstrap] migrate deploy fallo, intentando prisma db push...');
+        const push = runPrisma(['db', 'push', '--schema', profile.schema, '--skip-generate', '--accept-data-loss']);
+        if (!push.ok) {
+          console.warn('[bootstrap] db push tambien fallo. Detalle:\n', push.output || result.output);
+        } else {
+          console.log('[bootstrap] esquema aplicado con db push');
         }
       }
-
-      const result = await runMigrations({
-        migrationsDir: profile.migrations,
-        execute: async (sql) => {
-          // Cada migracion se ejecuta sentencia a sentencia: MySQL no permite
-          // varias sentencias en una sola llamada preparada.
-          const { splitStatements } = await import('../db/migrator');
-          for (const statement of splitStatements(sql)) {
-            await db.$executeRawUnsafe(statement);
-          }
-        },
-        applied: async () => {
-          const rows = (await db.$queryRawUnsafe(
-            'SELECT `name` FROM `_app_migrations`',
-          )) as Array<{ name: string }>;
-          return new Set(rows.map((row) => row.name));
-        },
-        markApplied: async (name, statements) => {
-          await db.$executeRawUnsafe(
-            'INSERT INTO `_app_migrations` (`name`, `statements`) VALUES (?, ?)',
-            name,
-            statements,
-          );
-        },
-        log: console.log,
-      });
-
-      if (result.failed) {
-        console.error(`[bootstrap] migracion fallida: ${result.failed.name}`);
-        console.error(`   ${result.failed.error.split('\n')[0]}`);
-      } else {
-        console.log(
-          `[bootstrap] migraciones: ${result.applied.length} aplicadas, ${result.skipped.length} ya estaban`,
-        );
-      }
-    } catch (err) {
-      console.error('[bootstrap] no se pudieron aplicar las migraciones:', (err as Error).message);
     }
   }
 

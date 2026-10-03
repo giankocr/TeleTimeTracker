@@ -2,8 +2,9 @@ import { prisma } from '../db/prisma';
 import { getSettingBool, getSettingInt, SETTING_KEYS } from './settings.service';
 import { buildReport, type ReportFilters } from './report.service';
 import { humanDuration, hoursFromSeconds, escapeHtml, truncate } from '../utils/format';
-import { dayBounds, resolveRange, zonedParts } from '../utils/time';
+import { dayBounds, formatLocal, resolveRange, zonedParts } from '../utils/time';
 import { parseCommand } from './nlu.service';
+import { liveSeconds } from './timer.service';
 import type { ParsedEntities } from '../../../shared/types';
 
 /**
@@ -22,24 +23,6 @@ export interface HandlerUser {
 export interface ReplyKeyboardHint {
   pendingProjectId?: string | null;
   pendingText?: string | null;
-}
-
-/**
- * Memoria efimera: si el bot no identifica el proyecto, se guarda el texto
- * original para reutilizarlo cuando el usuario elija uno de los botones.
- */
-const pendingSelections = new Map<string, { text: string; at: number }>();
-
-export function rememberPendingProject(userId: string, text: string): void {
-  pendingSelections.set(userId, { text, at: Date.now() });
-}
-
-export function takePendingProject(userId: string): { text: string } | null {
-  const value = pendingSelections.get(userId);
-  if (!value) return null;
-  pendingSelections.delete(userId);
-  if (Date.now() - value.at > 10 * 60 * 1000) return null;
-  return { text: value.text };
 }
 
 /** Segundos registrados hoy por el usuario (todos los estados menos cancelados). */
@@ -129,6 +112,75 @@ export async function buildTelegramReport(
   }
   if (!report.byProject.length) lines.push('', '<i>Sin registros en el periodo.</i>');
   return lines.join('\n');
+}
+
+/**
+ * Tiempo consumido en una tarea o proyecto concreto.
+ * Busca por texto libre (titulo o descripcion) y por nombre de proyecto, para
+ * responder a "cuanto llevo en la tarea del login" o "cuanto llevo en Portal Web".
+ */
+export async function taskTimeReport(
+  user: HandlerUser,
+  query: string,
+  timezone: string,
+): Promise<{ found: boolean; text: string }> {
+  const term = query.trim();
+  if (term.length < 3) {
+    return { found: false, text: 'Dime al menos 3 letras de la tarea o del proyecto.' };
+  }
+
+  const entries = await prisma.timeEntry.findMany({
+    where: {
+      userId: user.id,
+      status: { not: 'CANCELLED' },
+      OR: [
+        { title: { contains: term } },
+        { description: { contains: term } },
+        { project: { name: { contains: term } } },
+        { client: { name: { contains: term } } },
+      ],
+    },
+    include: { project: true, client: true, taskType: true },
+    orderBy: { startedAt: 'desc' },
+    take: 100,
+  });
+
+  if (!entries.length) {
+    return {
+      found: false,
+      text: `🔍 No encontré registros que coincidan con <b>${escapeHtml(term)}</b>.`,
+    };
+  }
+
+  const totalSeconds = entries.reduce((acc, e) => acc + liveSeconds(e), 0);
+  const byProject = new Map<string, number>();
+  for (const entry of entries) {
+    const key = entry.project?.name ?? entry.client?.name ?? 'Sin proyecto';
+    byProject.set(key, (byProject.get(key) ?? 0) + liveSeconds(entry));
+  }
+
+  const lineas = [
+    `⏱ <b>Tiempo en «${escapeHtml(term)}»</b>`,
+    '',
+    `Total: <b>${humanDuration(totalSeconds)}</b> en ${entries.length} registro(s)`,
+  ];
+
+  if (byProject.size > 1) {
+    lineas.push('', '<b>Por proyecto</b>');
+    for (const [nombre, segundos] of [...byProject.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)) {
+      lineas.push(`• ${escapeHtml(nombre)}: ${humanDuration(segundos)}`);
+    }
+  }
+
+  const ultimos = entries.slice(0, 5);
+  lineas.push('', '<b>Últimos registros</b>');
+  for (const entry of ultimos) {
+    const cuando = formatLocal(entry.startedAt, timezone, false);
+    const estado = entry.status === 'RUNNING' ? ' (en curso)' : '';
+    lineas.push(`• ${cuando} · ${humanDuration(liveSeconds(entry))} — ${escapeHtml(entry.title ?? 'Sin título')}${estado}`);
+  }
+
+  return { found: true, text: lineas.join('\n') };
 }
 
 /** Convierte "hoy/ayer/semana/mes" o una fecha en un preset del reporte. */

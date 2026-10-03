@@ -66,6 +66,16 @@ export interface InlineKeyboardButton {
   url?: string;
 }
 
+/** Quita el teclado de creacion y devuelve el menu principal. */
+export const leaveKeyboard = (): ReplyMarkup => ({
+  keyboard: [
+    [{ text: '📊 Estado' }, { text: '📝 Pendientes' }],
+    [{ text: '⏸ Pausar' }, { text: '▶️ Retomar' }, { text: '⏹ Terminar' }],
+  ],
+  resize_keyboard: true,
+  is_persistent: true,
+});
+
 export interface KeyboardButton {
   text: string;
   /** Pide el telefono del usuario (ReplyKeyboard). No existe en botones inline. */

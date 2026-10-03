@@ -7,6 +7,7 @@ export const isoSecondsSince = (from: Date | string, to: Date = new Date()): num
 
 export function humanDuration(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
+  if (s === 0) return 'unos segundos';
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   if (h && m) return `${h}h ${m}m`;

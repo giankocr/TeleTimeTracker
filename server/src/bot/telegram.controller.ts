@@ -24,6 +24,8 @@ import {
 } from '../services/timer.service';
 import { isWithinWorkHours } from '../utils/time';
 import { listVisibleProjects } from '../services/resolve.service';
+import { beginGuidedStart, chooseProject, handleClientName, handleProjectName } from '../services/guided-start.service';
+import { clearFlow, getFlow, updateFlow } from '../services/guided-flow.service';
 import { githubToken } from '../config/env';
 import {
   MAIN_KEYBOARD,
@@ -45,8 +47,6 @@ import {
   nluContext,
   pendingTasksFor,
   presetFromEntities,
-  rememberPendingProject,
-  takePendingProject,
   todaySeconds,
   type HandlerUser,
 } from '../services/assistant.service';
@@ -209,7 +209,17 @@ async function handleSlashCommand(message: CommandInput, user: LinkedUser | null
     case '/status': {
       const entry = await getActiveEntry(user.id);
       const seconds = await todaySeconds(user.id, user.timezone);
-      return { handled: true, text: statusMessage(entry, user.timezone, seconds) };
+      let extra = '';
+      if (entry?.project?.name) {
+        // Tiempo acumulado en ese proyecto en los ultimos 30 dias.
+        const { taskTimeReport } = await import('../services/assistant.service');
+        const acumulado = await taskTimeReport(user, entry.project.name, user.timezone);
+        if (acumulado.found) {
+          const primeraLinea = acumulado.text.split('\n')[2] ?? '';
+          extra = primeraLinea ? `\n\n📁 <b>${entry.project.name}</b>: ${primeraLinea.replace('Total: ', '')}` : '';
+        }
+      }
+      return { handled: true, text: statusMessage(entry, user.timezone, seconds) + extra };
     }
     case '/pausar':
     case '/pause': {
@@ -244,6 +254,20 @@ async function handleSlashCommand(message: CommandInput, user: LinkedUser | null
       const [tasks, entry] = await Promise.all([pendingTasksFor(user.id), getActiveEntry(user.id)]);
       return { handled: true, text: agendaMessage(tasks, entry?.title ?? null, user.timezone) };
     }
+    case '/tiempo':
+    case '/time': {
+      if (!arg) {
+        return {
+          handled: true,
+          text:
+            '⏱ Dime la tarea o el proyecto: <code>/tiempo login</code>\n' +
+            'También vale <code>/tiempo Portal Web</code>.',
+        };
+      }
+      const { taskTimeReport } = await import('../services/assistant.service');
+      const report = await taskTimeReport(user, arg, user.timezone);
+      return { handled: true, text: report.text };
+    }
     case '/misproyectos': {
       const projects = await listVisibleProjects(user.id, user.roleKey);
       const list = projects.map((p) => `• ${p.name} <i>(${p.client.name})</i>`).join('\n');
@@ -257,36 +281,73 @@ async function handleSlashCommand(message: CommandInput, user: LinkedUser | null
 // ---------------------------------------------------------------------------
 // Acciones del NLU
 // ---------------------------------------------------------------------------
-async function handleStartLike(user: LinkedUser, text: string, entities: any, source: string, switchMode: boolean) {
-  const res = await startTimer({
+async function handleStartLike(
+  user: LinkedUser,
+  text: string,
+  entities: any,
+  source: string,
+  switchMode: boolean,
+): Promise<{ text: string; markup?: any; started?: boolean }> {
+  void switchMode; // el encabezado de "cambio de tarea" ya lo arma startConfirmation
+
+  // Alta guiada: si el proyecto no existe (o no hay ninguno), el bot acompana
+  // al trabajador para crearlo y luego arranca el cronometro con sus datos.
+  const reply = await beginGuidedStart({
     userId: user.id,
     roleKey: user.roleKey,
+    timezone: user.timezone,
     rawText: text,
-    projectName: entities.projectName,
-    clientName: entities.clientName,
-    taskTypeName: entities.taskTypeName,
-    title: entities.title ?? text,
-    description: entities.description,
-    tag: entities.tag,
+    entities: {
+      projectName: entities?.projectName,
+      clientName: entities?.clientName,
+      taskTypeName: entities?.taskTypeName,
+      title: entities?.title,
+      description: entities?.description,
+      tag: entities?.tag,
+    },
     source,
   });
 
-  if (res.needsProject) {
-    rememberPendingProject(user.id, text);
-    const candidates = (res.available ?? []).slice(0, 8);
-    if (!candidates.length) {
-      return {
-        text: '📁 No tienes proyectos configurados. Pide a un administrador que cree un proyecto o te asigne a uno.',
-      };
-    }
-    return {
-      text: projectPrompt(candidates),
-      markup: projectPicker(candidates.map((c: ResolvedProject) => ({ id: c.id, label: `${c.name} · ${c.clientName}` }))),
-    };
+  return { text: reply.text, markup: reply.markup, started: reply.started };
+}
+
+/** Continua el alta guiada con el texto que acaba de escribir el usuario. */
+async function continueGuidedFlow(
+  user: LinkedUser,
+  text: string,
+  step: string,
+  source: string,
+): Promise<{ text: string; markup?: any } | null> {
+  const flow = getFlow(user.id);
+  if (!flow) return null;
+
+  const context = {
+    userId: user.id,
+    roleKey: user.roleKey,
+    timezone: user.timezone,
+    rawText: flow.originalText || text,
+    entities: {
+      projectName: flow.projectName,
+      clientName: flow.clientName,
+      taskTypeName: flow.taskTypeName,
+      title: flow.title,
+    },
+    source,
+  };
+
+  // El usuario puede cancelar en cualquier momento.
+  if (/^(cancelar|cancela|salir|olvidalo|nada)$/i.test(text.trim())) {
+    clearFlow(user.id);
+    return { text: '👌 Cancelado. Cuando quieras, escribe de nuevo en qué vas a trabajar.' };
   }
 
-  void switchMode; // el encabezado de "cambio de tarea" ya lo arma startConfirmation
-  return { text: startConfirmation(res.entry!, res.previous ?? null, user.timezone), markup: entryButtons(res.entry!.id) };
+  if (step === 'ASK_CLIENT_NAME') {
+    return handleClientName(context, text);
+  }
+  if (step === 'ASK_PROJECT_NAME') {
+    return handleProjectName(context, text);
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +525,27 @@ async function handleNaturalText(
     return;
   }
 
+  // Si hay un alta guiada en curso, la respuesta del usuario es el nombre del
+  // cliente o del proyecto (no una tarea nueva).
+  const activeFlow = getFlow(user.id);
+  if (activeFlow && (activeFlow.step === 'ASK_CLIENT_NAME' || activeFlow.step === 'ASK_PROJECT_NAME')) {
+    const guided = await continueGuidedFlow(user, text, activeFlow.step, source);
+    if (guided) {
+      await reply(chatId, guided.text, { reply_markup: guided.markup ?? MAIN_KEYBOARD });
+      await logInteraction({
+        userId: user.id,
+        telegramId,
+        chatId: String(chatId),
+        kind,
+        rawText: text,
+        intent: activeFlow.step === 'ASK_CLIENT_NAME' ? 'CREATE_CLIENT' : 'CREATE_PROJECT',
+        reply: guided.text,
+        latencyMs: Date.now() - started,
+      });
+      return;
+    }
+  }
+
   const context = await nluContext(user.id, user.roleKey);
   const parsed = await parseCommand(text, context);
   let response = '';
@@ -588,28 +670,70 @@ async function handleCallback(query: TgUpdate['callback_query']): Promise<void> 
       break;
     }
     case 'pick': {
-      const pending = takePendingProject(user.id);
-      const project = await prisma.clientProject.findUnique({ where: { id: value }, include: { client: true } });
-      if (!project) {
-        await reply(chatId, 'No encontre ese proyecto.');
-        return;
-      }
-      const res = await startTimer({
-        userId: user.id,
-        roleKey: user.roleKey,
-        rawText: pending?.text ?? project.name, // texto original del trabajador
-        project: { id: project.id, name: project.name, clientId: project.client.id, clientName: project.client.name, githubRepos: project.githubRepos },
-        title: pending?.text || project.name,
-        source: 'TELEGRAM_BUTTON',
+      // Proyecto elegido en la lista: se arranca la tarea con el texto original.
+      const guided = await chooseProject(guidedContext(user, ''), value!);
+      await reply(chatId, guided.text, { reply_markup: guided.markup ?? MAIN_KEYBOARD });
+      break;
+    }
+    case 'newproj': {
+      // Crear un proyecto dentro de un cliente que ya existe.
+      const clientes = await prisma.client.findMany({
+        where: { isActive: true },
+        orderBy: { name: 'asc' },
+        take: 8,
+        select: { id: true, name: true },
       });
-      await reply(chatId, startConfirmation(res.entry!, res.previous ?? null, user.timezone), {
-        reply_markup: entryButtons(res.entry!.id),
+      if (!clientes.length) {
+        await reply(chatId, 'No hay clientes todavía. Escribe el nombre del cliente y lo creo.');
+        break;
+      }
+      await reply(chatId, '¿A qué <b>cliente</b> pertenece el proyecto?', {
+        reply_markup: {
+          inline_keyboard: clientes.map((c) => [{ text: c.name.slice(0, 60), callback_data: `pickclient:${c.id}` }]),
+        },
+      });
+      break;
+    }
+    case 'newclient': {
+      updateFlow(user.id, { step: 'ASK_CLIENT_NAME' });
+      await reply(chatId, '¿<b>Cómo se llama el cliente</b>? Escríbelo aquí abajo.\n<i>Ejemplo: Acme Corp</i>', {
+        reply_markup: (await import('./telegram.api')).leaveKeyboard(),
+      });
+      break;
+    }
+    case 'pickclient': {
+      const cliente = await prisma.client.findUnique({ where: { id: value! } });
+      if (!cliente) {
+        await reply(chatId, 'Ese cliente ya no existe.');
+        break;
+      }
+      updateFlow(user.id, { step: 'ASK_PROJECT_NAME', clientId: cliente.id, clientLabel: cliente.name });
+      await reply(chatId, `Cliente: <b>${cliente.name}</b>\n\n¿<b>Cómo se llama el proyecto</b>? Escríbelo aquí abajo.`, {
+        reply_markup: (await import('./telegram.api')).leaveKeyboard(),
       });
       break;
     }
     default:
       await reply(chatId, 'Accion no reconocida.');
   }
+}
+
+/** Contexto minimo para las acciones guiadas disparadas por botones. */
+function guidedContext(user: LinkedUser, text: string) {
+  const flow = getFlow(user.id);
+  return {
+    userId: user.id,
+    roleKey: user.roleKey,
+    timezone: user.timezone,
+    rawText: flow?.originalText || text,
+    entities: {
+      projectName: flow?.projectName,
+      clientName: flow?.clientName,
+      taskTypeName: flow?.taskTypeName,
+      title: flow?.title,
+    },
+    source: 'TELEGRAM_BUTTON',
+  };
 }
 
 // ---------------------------------------------------------------------------
