@@ -120,6 +120,7 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
         projectId: z.string().optional(),
         projectName: z.string().max(120).optional(),
         clientName: z.string().max(120).optional(),
+        taskId: z.string().optional(),
         taskTypeId: z.string().optional(),
         title: z.string().max(180).optional(),
         description: z.string().max(2000).optional(),
@@ -144,6 +145,13 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
       : null;
     const taskType = d.taskTypeId ? await prisma.taskType.findUnique({ where: { id: d.taskTypeId } }) : null;
 
+    // Cronometrar SOBRE una tarea concreta: el tramo queda enlazado a ella, que
+    // es lo que permite ver el acumulado por tarea y borrar tarea + tramos.
+    if (d.taskId) {
+      const tarea = await prisma.task.findUnique({ where: { id: d.taskId }, select: { id: true } });
+      if (!tarea) return reply.code(400).send({ error: 'La tarea indicada no existe', code: 'TASK_NOT_FOUND' });
+    }
+
     const res = await startTimer({
       userId: targetUserId,
       roleKey: target.role.key,
@@ -153,6 +161,7 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
         : null,
       projectName: d.projectName,
       clientName: d.clientName,
+      taskId: d.taskId ?? null,
       title: d.title,
       description: d.description,
       taskTypeName: taskType?.name,

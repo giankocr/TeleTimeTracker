@@ -4,6 +4,7 @@ import { prisma } from '../db/prisma';
 import { PERMISSIONS } from '../../../shared/types';
 import { authenticate, hasPermission, requirePermission, visibleUserIds } from '../middleware/auth';
 import { audit } from '../utils/audit';
+import { SETTING_KEYS, getSettingBool } from '../services/settings.service';
 
 /**
  * CRUD de clientes y sus proyectos.
@@ -663,21 +664,168 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
     return reply.send({ task });
   });
 
-  /** Elimina una tarea. Sus tramos se conservan, desvinculados. */
+  /**
+   * GET /api/tasks/:id/impact — que se perderia al borrar la tarea.
+   *
+   * Borrar una tarea tiene DOS resultados posibles y muy distintos, asi que el
+   * panel necesita los numeros ANTES de preguntar:
+   *   · solo la tarea        -> los tramos se conservan, desvinculados
+   *   · tarea + sus tramos   -> se borran tambien los registros de tiempo
+   */
+  app.get('/tasks/:id/impact', { preHandler: [authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const auth = request.auth!;
+
+    const task = await prisma.task.findUnique({
+      where: { id },
+      include: {
+        project: { select: { name: true } },
+        client: { select: { name: true } },
+      },
+    });
+    if (!task) return reply.code(404).send({ error: 'Tarea no encontrada' });
+
+    const visible = await visibleUserIds(auth);
+
+    const tramos = await prisma.timeEntry.findMany({
+      where: { taskId: id },
+      select: { id: true, userId: true, durationSec: true, status: true, title: true },
+    });
+
+    const totalSegundos = tramos.reduce((acc, e) => acc + (e.durationSec ?? 0), 0);
+    const enCurso = tramos.filter((e) => e.status === 'RUNNING' || e.status === 'PAUSED');
+    const ajenos = visible.all ? [] : tramos.filter((e) => !visible.ids.includes(e.userId));
+
+    return reply.send({
+      task: {
+        id: task.id,
+        title: task.title,
+        projectName: task.project?.name ?? null,
+        clientName: task.client?.name ?? null,
+      },
+      // Numeros que necesita la confirmacion del panel.
+      entries: tramos.length,
+      totalSeconds: totalSegundos,
+      runningEntries: enCurso.length,
+      foreignEntries: ajenos.length,
+      canDeleteEntries: hasPermission(auth, PERMISSIONS.ENTRIES_DELETE),
+      hardDeleteEnabled: getSettingBool(SETTING_KEYS.ENTRIES_ALLOW_HARD_DELETE, true),
+      warning: enCurso.length
+        ? `La tarea tiene ${enCurso.length} registro(s) de tiempo EN CURSO. Detenlos antes de borrarla.`
+        : null,
+    });
+  });
+
+  /**
+   * Elimina una tarea.
+   *
+   * Por defecto SOLO se borra la tarea: sus registros de tiempo se conservan
+   * (quedan sin tarea asignada) porque son la evidencia del trabajo hecho.
+   *
+   * Con `?withEntries=1` se borran TAMBIEN sus registros de tiempo. Es un
+   * borrado definitivo (no pasa por «Anulado»), asi que:
+   *   · requiere el permiso entries:delete,
+   *   · respeta el ajuste «permitir borrado definitivo»,
+   *   · exige `force=1` para confirmar,
+   *   · se niega si hay un registro EN CURSO (hay que detenerlo primero),
+   *   · deja en la auditoria el resumen de cada registro borrado.
+   */
   app.delete('/tasks/:id', { preHandler: [requirePermission(PERMISSIONS.ENTRIES_DELETE)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
+    const { withEntries, force } = request.query as { withEntries?: string; force?: string };
+
     const task = await prisma.task.findUnique({ where: { id } });
     if (!task) return reply.code(404).send({ error: 'Tarea no encontrada' });
 
-    const tramos = await prisma.timeEntry.count({ where: { taskId: id } });
-    await prisma.task.delete({ where: { id } });
-    await audit(request, { action: 'task.delete', entity: 'task', entityId: id, metadata: { title: task.title, entries: tramos } });
+    const tramos = await prisma.timeEntry.findMany({
+      where: { taskId: id },
+      select: { id: true, userId: true, title: true, durationSec: true, startedAt: true, status: true },
+    });
+
+    // --- Caso A: solo la tarea (los tramos se conservan) ---------------------
+    if (withEntries !== '1') {
+      // Se desvinculan los tramos EXPLICITAMENTE antes de borrar la tarea. El FK
+      // es `onDelete: SetNull`, pero en SQLite la aplicación de claves foraneas
+      // depende de un PRAGMA: si no está activo, el tramo quedaría apuntando a
+      // una tarea inexistente. Con esto el resultado es el mismo en MySQL y en
+      // SQLite, y el mensaje de la API no miente.
+      await prisma.$transaction(async (tx) => {
+        await tx.timeEntry.updateMany({ where: { taskId: id }, data: { taskId: null } });
+        await tx.task.delete({ where: { id } });
+      });
+      await audit(request, {
+        action: 'task.delete',
+        entity: 'task',
+        entityId: id,
+        metadata: { title: task.title, orphanedEntries: tramos.length },
+      });
+      return reply.send({
+        ok: true,
+        deletedEntries: 0,
+        orphanedEntries: tramos.length,
+        message: tramos.length
+          ? `Tarea eliminada. Sus ${tramos.length} registro(s) de tiempo se conservan, pero sin tarea asignada.`
+          : 'Tarea eliminada.',
+      });
+    }
+
+    // --- Caso B: tarea + sus tramos (borrado definitivo) --------------------
+    if (!getSettingBool(SETTING_KEYS.ENTRIES_ALLOW_HARD_DELETE, true)) {
+      return reply.code(403).send({
+        error: 'El borrado definitivo está desactivado en la configuración. Borra solo la tarea o usa «Anular» en cada registro.',
+        code: 'HARD_DELETE_DISABLED',
+      });
+    }
+
+    const enCurso = tramos.filter((e) => e.status === 'RUNNING' || e.status === 'PAUSED');
+    if (enCurso.length) {
+      return reply.code(409).send({
+        error: `Esta tarea tiene ${enCurso.length} registro(s) de tiempo en curso. Detenlos antes de borrar la tarea con sus tramos.`,
+        code: 'ENTRIES_RUNNING',
+        entries: enCurso.length,
+      });
+    }
+
+    if (tramos.length && force !== '1') {
+      return reply.code(409).send({
+        error: `Se van a borrar DEFINITIVAMENTE ${tramos.length} registro(s) de tiempo de esta tarea. Confirma con force=1.`,
+        code: 'WOULD_DELETE_ENTRIES',
+        entries: tramos.length,
+      });
+    }
+
+    // Resumen para la auditoria: despues del borrado no queda rastro del detalle.
+    const resumen = tramos.map((e) => ({
+      id: e.id,
+      userId: e.userId,
+      title: e.title,
+      durationSec: e.durationSec,
+      startedAt: e.startedAt.toISOString(),
+      status: e.status,
+    }));
+
+    // En una transaccion: si falla el borrado de la tarea no queremos quedarnos
+    // sin los tramos (ni al reves). El FK de time_entries.taskId es SET NULL,
+    // asi que hay que borrar los tramos ANTES que la tarea.
+    // Las pausas y etiquetas de cada tramo caen por onDelete: Cascade.
+    await prisma.$transaction(async (tx) => {
+      await tx.timeEntry.deleteMany({ where: { taskId: id } });
+      await tx.task.delete({ where: { id } });
+    });
+
+    await audit(request, {
+      action: 'task.delete_with_entries',
+      entity: 'task',
+      entityId: id,
+      metadata: { title: task.title, deletedEntries: resumen.length, entries: resumen },
+    });
 
     return reply.send({
       ok: true,
-      orphanedEntries: tramos,
-      message: tramos
-        ? `Tarea eliminada. Sus ${tramos} registro(s) de tiempo se conservan, pero sin tarea asignada.`
+      deletedEntries: resumen.length,
+      orphanedEntries: 0,
+      message: resumen.length
+        ? `Tarea eliminada junto con sus ${resumen.length} registro(s) de tiempo.`
         : 'Tarea eliminada.',
     });
   });

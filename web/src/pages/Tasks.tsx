@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatDateTime, formatHours, formatSeconds } from '../lib/format';
 import { Alert, Badge, Card, Empty, Field, Modal, Spinner, StatCard, useToast } from '../components/ui';
+import { TaskDeleteModal } from '../components/TaskDeleteModal';
 
 /**
  * TAREAS
@@ -21,6 +22,21 @@ const STATUS_KIND: Record<string, string> = {
 };
 
 const PRIORITY_LABEL: Record<string, string> = { HIGH: 'Alta', NORMAL: 'Normal', LOW: 'Baja' };
+
+/** Formulario vacío: constante de módulo para que su identidad no cambie por render. */
+const EMPTY_FORM = {
+  title: '',
+  projectId: '',
+  taskTypeId: '',
+  assigneeId: '',
+  description: '',
+  estimatedHours: '',
+  priority: 'NORMAL',
+  dueDate: '',
+};
+
+/** Convierte el ISO de `dueDate` a lo que espera un <input type="date">. */
+const fechaParaInput = (iso: string | null) => (iso ? new Date(iso).toISOString().slice(0, 10) : '');
 
 interface TaskRow {
   id: string;
@@ -57,19 +73,13 @@ export default function TasksPage() {
 
   const [detail, setDetail] = useState<{ task: any; entries: any[] } | null>(null);
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({
-    title: '',
-    projectId: '',
-    taskTypeId: '',
-    assigneeId: '',
-    description: '',
-    estimatedHours: '',
-    priority: 'NORMAL',
-    dueDate: '',
-  });
+  const [editing, setEditing] = useState<{ id: string; title: string } | null>(null);
+  const [deleting, setDeleting] = useState<{ id: string; title: string } | null>(null);
+  const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
   const canWrite = can('entries:write');
+  const canDelete = can('entries:delete');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -127,9 +137,20 @@ export default function TasksPage() {
   };
 
   const create = async () => {
+    await save(null);
+  };
+
+  /**
+   * Guarda la tarea. Con `id` es una EDICION (PATCH); sin él, una tarea nueva.
+   *
+   * El titulo importa mas de lo que parece: el bot agrupa los registros en la
+   * misma tarea cuando coinciden titulo + proyecto, asi que al renombrar aqui no
+   * se tocan los tramos ya existentes (siguen enlazados por `taskId`).
+   */
+  const save = async (id: string | null) => {
     setSaving(true);
     try {
-      await api.post('/tasks', {
+      const payload = {
         title: form.title,
         projectId: form.projectId || null,
         taskTypeId: form.taskTypeId || null,
@@ -138,10 +159,14 @@ export default function TasksPage() {
         estimatedHours: form.estimatedHours ? Number(form.estimatedHours) : null,
         priority: form.priority,
         dueDate: form.dueDate ? new Date(form.dueDate).toISOString() : null,
-      });
-      push('Tarea creada', 'success');
+      };
+      if (id) await api.patch(`/tasks/${id}`, payload);
+      else await api.post('/tasks', payload);
+
+      push(id ? 'Tarea actualizada' : 'Tarea creada', 'success');
       setCreating(false);
-      setForm({ title: '', projectId: '', taskTypeId: '', assigneeId: '', description: '', estimatedHours: '', priority: 'NORMAL', dueDate: '' });
+      setEditing(null);
+      setForm(EMPTY_FORM);
       await load();
     } catch (err) {
       push((err as Error).message, 'error');
@@ -150,9 +175,89 @@ export default function TasksPage() {
     }
   };
 
+  /** Abre el formulario de edicion con los datos actuales de la tarea. */
+  const openEdit = async (task: TaskRow) => {
+    try {
+      const res = await api.get<{ task: any }>(`/tasks/${task.id}`);
+      const t = res.task;
+      setForm({
+        title: t.title ?? '',
+        projectId: t.projectId ?? '',
+        taskTypeId: t.taskTypeId ?? '',
+        assigneeId: t.assigneeId ?? '',
+        description: t.description ?? '',
+        estimatedHours: t.estimatedHours != null ? String(t.estimatedHours) : '',
+        priority: t.priority ?? 'NORMAL',
+        dueDate: fechaParaInput(t.dueDate),
+      });
+      setEditing({ id: t.id, title: t.title });
+    } catch (err) {
+      push((err as Error).message, 'error');
+    }
+  };
+
   const totalSeconds = tasks.reduce((acc, t) => acc + t.totalSeconds, 0);
   const abiertas = tasks.filter((t) => t.status === 'IN_PROGRESS' || t.status === 'OPEN').length;
   const multiTramo = tasks.filter((t) => t.entryCount > 1).length;
+
+  /** Cuerpo del formulario: se comparte entre «Nueva tarea» y «Editar tarea». */
+  const formFields = (
+    <>
+      <Field label="Título de la tarea" hint="Es lo que verás luego al registrar tiempo sobre ella.">
+        <input className="input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Maquetación del login" />
+      </Field>
+
+      <div className="form-grid">
+        <Field label="Proyecto">
+          <select className="select" value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}>
+            <option value="">Sin proyecto</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} · {p.clientName}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Tipo de tarea">
+          <select className="select" value={form.taskTypeId} onChange={(e) => setForm({ ...form, taskTypeId: e.target.value })}>
+            <option value="">Sin tipo</option>
+            {taskTypes.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Responsable">
+          <select className="select" value={form.assigneeId} onChange={(e) => setForm({ ...form, assigneeId: e.target.value })}>
+            <option value="">Yo</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.fullName}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Estimación (horas)">
+          <input className="input" type="number" min="0" step="0.5" value={form.estimatedHours} onChange={(e) => setForm({ ...form, estimatedHours: e.target.value })} />
+        </Field>
+        <Field label="Prioridad">
+          <select className="select" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
+            <option value="HIGH">Alta</option>
+            <option value="NORMAL">Normal</option>
+            <option value="LOW">Baja</option>
+          </select>
+        </Field>
+        <Field label="Fecha límite">
+          <input className="input" type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
+        </Field>
+      </div>
+
+      <Field label="Descripción">
+        <textarea className="textarea" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+      </Field>
+    </>
+  );
 
   return (
     <div className="stack">
@@ -260,14 +365,29 @@ export default function TasksPage() {
                         <Link className="btn btn-sm btn-ghost" to={`/registros?taskId=${t.id}`} title="Abrir sus registros en la vista de tiempo">
                           ⏱
                         </Link>
-                        {canWrite && t.status !== 'DONE' ? (
-                          <button className="btn btn-sm" onClick={() => void changeStatus(t, 'DONE')} title="Marcar como completada">
-                            ✓
-                          </button>
+                        {canWrite ? (
+                          <>
+                            <button className="btn btn-sm" onClick={() => void openEdit(t)} title="Editar tarea">
+                              ✏️
+                            </button>
+                            {t.status !== 'DONE' ? (
+                              <button className="btn btn-sm" onClick={() => void changeStatus(t, 'DONE')} title="Marcar como completada">
+                                ✓
+                              </button>
+                            ) : (
+                              <button className="btn btn-sm" onClick={() => void changeStatus(t, 'OPEN')} title="Reabrir tarea">
+                                ↺
+                              </button>
+                            )}
+                          </>
                         ) : null}
-                        {canWrite && t.status === 'DONE' ? (
-                          <button className="btn btn-sm" onClick={() => void changeStatus(t, 'OPEN')} title="Reabrir tarea">
-                            ↺
+                        {canDelete ? (
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => setDeleting({ id: t.id, title: t.title })}
+                            title="Borrar tarea"
+                          >
+                            🗑
                           </button>
                         ) : null}
                       </div>
@@ -377,60 +497,55 @@ export default function TasksPage() {
             </>
           }
         >
-          <Field label="Título de la tarea" hint="Es lo que verás luego al registrar tiempo sobre ella.">
-            <input className="input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Maquetación del login" />
-          </Field>
-
-          <div className="form-grid">
-            <Field label="Proyecto">
-              <select className="select" value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}>
-                <option value="">Sin proyecto</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} · {p.clientName}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Tipo de tarea">
-              <select className="select" value={form.taskTypeId} onChange={(e) => setForm({ ...form, taskTypeId: e.target.value })}>
-                <option value="">Sin tipo</option>
-                {taskTypes.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Responsable">
-              <select className="select" value={form.assigneeId} onChange={(e) => setForm({ ...form, assigneeId: e.target.value })}>
-                <option value="">Yo</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.fullName}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Estimación (horas)">
-              <input className="input" type="number" min="0" step="0.5" value={form.estimatedHours} onChange={(e) => setForm({ ...form, estimatedHours: e.target.value })} />
-            </Field>
-            <Field label="Prioridad">
-              <select className="select" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
-                <option value="HIGH">Alta</option>
-                <option value="NORMAL">Normal</option>
-                <option value="LOW">Baja</option>
-              </select>
-            </Field>
-            <Field label="Fecha límite">
-              <input className="input" type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
-            </Field>
-          </div>
-
-          <Field label="Descripción">
-            <textarea className="textarea" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-          </Field>
+          {formFields}
         </Modal>
+      ) : null}
+
+      {/* Editar: mismos campos que al crear, con los valores actuales */}
+      {editing ? (
+        <Modal
+          title={`Editar «${editing.title}»`}
+          onClose={() => {
+            setEditing(null);
+            setForm(EMPTY_FORM);
+          }}
+          wide
+          footer={
+            <>
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  setEditing(null);
+                  setForm(EMPTY_FORM);
+                }}
+                disabled={saving}
+              >
+                Cancelar
+              </button>
+              <button className="btn btn-primary" onClick={() => void save(editing.id)} disabled={saving || form.title.trim().length < 2}>
+                {saving ? 'Guardando…' : 'Guardar cambios'}
+              </button>
+            </>
+          }
+        >
+          {formFields}
+          <Alert kind="info">
+            Cambiar el título o el proyecto no altera los tramos ya registrados: siguen enlazados a esta tarea.
+          </Alert>
+        </Modal>
+      ) : null}
+
+      {/* Borrar: primero se muestra qué se pierde y se elige qué hacer con los tramos */}
+      {deleting ? (
+        <TaskDeleteModal
+          task={deleting}
+          onClose={() => setDeleting(null)}
+          onDone={(message) => {
+            setDeleting(null);
+            push(message, 'success');
+            void load();
+          }}
+        />
       ) : null}
     </div>
   );
