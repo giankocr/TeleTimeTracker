@@ -218,6 +218,23 @@ tbody tr:hover { background: rgba(99, 102, 241, 0.06); }
 .stack-sm { display: flex; flex-direction: column; gap: 6px; }
 .divider { height: 1px; background: var(--border-soft); margin: 4px 0; }
 
+/* Jerarquia Tarea -> Registro de tiempo (una tarea tiene uno o varios tramos) */
+.hierarchy { display: flex; flex-direction: column; gap: 2px; }
+.hierarchy-parent {
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: var(--primary, #818cf8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hierarchy-child {
+  padding-left: 12px;
+  border-left: 2px solid var(--border-soft);
+  margin-left: 4px;
+  font-size: 0.86rem;
+}
+
 .empty {
   padding: 34px 18px; text-align: center; color: var(--muted-2);
   border: 1px dashed var(--border); border-radius: var(--radius-sm); font-size: 0.87rem;

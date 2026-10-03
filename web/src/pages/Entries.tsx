@@ -14,6 +14,8 @@ import {
 } from '../lib/format';
 import { Alert, Badge, Card, Empty, Field, Modal, RangeSelect, Spinner, useToast } from '../components/ui';
 import { useAuth } from '../lib/auth';
+import { formatDateTime, formatHours, formatSeconds, formatTime, toLocalInput } from '../lib/format';
+import { TaskPicker, NEW_TASK } from '../components/TaskPicker';
 
 /**
  * Registros de tiempo: historial con filtros, control del cronómetro propio
@@ -55,6 +57,8 @@ export default function EntriesPage() {
     title: '',
     description: '',
     projectId: '',
+    taskId: '',
+    newTaskTitle: '',
     taskTypeId: '',
     startedAt: '',
     endedAt: '',
@@ -62,7 +66,8 @@ export default function EntriesPage() {
     status: 'FINISHED',
   });
   const [savingEdit, setSavingEdit] = useState(false);
-  const [manual, setManual] = useState({ title: '', projectId: '', taskTypeId: '', startedAt: '', endedAt: '', description: '' });
+  const MANUAL_VACIO = { title: '', projectId: '', taskId: '', newTaskTitle: '', taskTypeId: '', startedAt: '', endedAt: '', description: '' };
+  const [manual, setManual] = useState(MANUAL_VACIO);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -98,7 +103,9 @@ export default function EntriesPage() {
         api.get<{ projects: any[] }>('/projects').catch(() => ({ projects: [] })),
         api.get<{ users: any[] }>('/users').catch(() => ({ users: [] })),
         api.get<{ taskTypes: any[] }>('/task-types').catch(() => ({ taskTypes: [] })),
-        api.get<{ tasks: any[] }>('/tasks', { take: 300 }).catch(() => ({ tasks: [] })),
+        // `scope: 'all'`: al asignar un registro hay que poder elegir CUALQUIER tarea,
+        // no solo las mias (el registro puede ser de otra persona).
+        api.get<{ tasks: any[] }>('/tasks', { take: 300, scope: 'all' }).catch(() => ({ tasks: [] })),
       ]);
       setClients(c.clients);
       setProjects(p.projects);
@@ -109,6 +116,9 @@ export default function EntriesPage() {
   }, []);
 
   /** Mantiene el filtro de tarea en la URL para poder enlazar a esta vista. */
+  /** Tarea del filtro activo (si se llega desde «Tareas» con ?taskId=...). */
+  const tareaSeleccionada = taskId ? tasks.find((t: any) => t.id === taskId) : null;
+
   const changeTaskFilter = (value: string) => {
     setTaskId(value);
     const next = new URLSearchParams(searchParams);
@@ -133,6 +143,13 @@ export default function EntriesPage() {
       await api.post('/entries', {
         title: manual.title,
         projectId: manual.projectId || null,
+        // La tarea manda: si se eligio una existente se envia su id; si se pidio
+        // una nueva, el servidor la crea con este titulo (y reutiliza si ya hay
+        // una igual en el mismo proyecto).
+        ...(manual.taskId && manual.taskId !== NEW_TASK ? { taskId: manual.taskId } : {}),
+        ...(manual.taskId === NEW_TASK && manual.newTaskTitle.trim()
+          ? { newTaskTitle: manual.newTaskTitle.trim() }
+          : {}),
         taskTypeId: manual.taskTypeId || null,
         startedAt: new Date(manual.startedAt).toISOString(),
         endedAt: new Date(manual.endedAt).toISOString(),
@@ -140,7 +157,7 @@ export default function EntriesPage() {
       });
       push('Registro creado', 'success');
       setManualOpen(false);
-      setManual({ title: '', projectId: '', taskTypeId: '', startedAt: '', endedAt: '', description: '' });
+      setManual(MANUAL_VACIO);
       await load();
     } catch (err) {
       push((err as Error).message, 'error');
@@ -163,6 +180,8 @@ export default function EntriesPage() {
       title: entry.title ?? '',
       description: entry.description ?? '',
       projectId: entry.projectId ?? '',
+      taskId: entry.taskId ?? '',
+      newTaskTitle: '',
       taskTypeId: entry.taskTypeId ?? '',
       startedAt: toLocalInput(entry.startedAt),
       endedAt: toLocalInput(entry.endedAt),
@@ -185,6 +204,13 @@ export default function EntriesPage() {
         title: editForm.title.trim() || undefined,
         description: editForm.description || null,
         projectId: editForm.projectId || null,
+        // Permite mover el registro a otra tarea, crear una nueva o dejarlo sin
+        // tarea ('' -> null). El servidor valida que la tarea exista.
+        ...(editForm.taskId === NEW_TASK
+          ? editForm.newTaskTitle.trim()
+            ? { newTaskTitle: editForm.newTaskTitle.trim() }
+            : {}
+          : { taskId: editForm.taskId || null }),
         taskTypeId: editForm.taskTypeId || null,
         ...(editForm.startedAt ? { startedAt: new Date(editForm.startedAt).toISOString() } : {}),
         ...(editForm.endedAt ? { endedAt: new Date(editForm.endedAt).toISOString() } : {}),
@@ -249,7 +275,9 @@ export default function EntriesPage() {
         <div>
           <h1>Registros de tiempo</h1>
           <p className="page-sub">
-            {data ? `${data.total} registro(s) · ${formatHours(data.totals.hours)} en el periodo` : 'Cargando…'}
+            {data
+              ? `${data.total} registro(s) · ${formatHours(data.totals.hours)} en el periodo · cada registro pertenece a una tarea`
+              : 'Cargando…'}
           </p>
         </div>
         <div className="btn-row">
@@ -363,6 +391,23 @@ export default function EntriesPage() {
           ) : null}
         </div>
 
+        {tareaSeleccionada ? (
+          <Alert kind="info">
+            <div className="row-between" style={{ alignItems: 'center' }}>
+              <span>
+                Mostrando los <b>registros de tiempo</b> de la tarea{' '}
+                <b>«{tareaSeleccionada.title}»</b>
+                {tareaSeleccionada.projectName ? ` (${tareaSeleccionada.projectName})` : ''}:{' '}
+                <b>{tareaSeleccionada.entryCount ?? entries.length}</b> registro(s) y{' '}
+                <b>{formatSeconds(tareaSeleccionada.totalSeconds ?? 0)}</b> acumulados.
+              </span>
+              <button className="btn btn-sm" onClick={() => changeTaskFilter('')}>
+                Ver todos los registros
+              </button>
+            </div>
+          </Alert>
+        ) : null}
+
         {loading ? (
           <Spinner />
         ) : entries.length === 0 ? (
@@ -373,7 +418,7 @@ export default function EntriesPage() {
               <thead>
                 <tr>
                   <th>Inicio</th>
-                  <th>Tarea</th>
+                  <th>Tarea → registro</th>
                   <th>Proyecto</th>
                   <th>Tipo</th>
                   <th>Origen</th>
@@ -391,15 +436,19 @@ export default function EntriesPage() {
                       <span className="tiny muted-2">→ {e.endedAt ? formatTime(e.endedAt) : 'en curso'}</span>
                     </td>
                     <td>
-                      <div className="stack-sm" style={{ gap: 1, maxWidth: 340 }}>
-                        <strong>{e.taskTitle ?? e.title ?? 'Sin tarea'}</strong>
+                      {/* Jerarquia: la TAREA es el padre y este registro es uno de
+                          sus tramos. Por eso la tarea se muestra arriba y clara. */}
+                      <div className="hierarchy" style={{ maxWidth: 340 }}>
                         {e.taskId ? (
-                          <span className="tiny badge badge-primary" style={{ alignSelf: 'flex-start' }}>
-                            {e.taskTitle ? 'tarea' : 'sin título'}: {String(e.taskId).slice(0, 10)}
+                          <span className="hierarchy-parent" title="Tarea a la que pertenece este registro">
+                            🗂 {e.taskTitle ?? 'Tarea sin título'}
                           </span>
                         ) : (
-                          <span className="tiny muted-2">sin tarea asociada</span>
+                          <span className="tiny" style={{ color: 'var(--warning, #f59e0b)' }} title="Sin tarea: este tiempo no suma al acumulado de ninguna tarea">
+                            ⚠ Sin tarea · no suma a ninguna tarea
+                          </span>
                         )}
+                        <span className="hierarchy-child">↳ {e.title ?? 'Registro sin título'}</span>
                         {e.description ? <span className="tiny muted-2">{e.description.slice(0, 80)}</span> : null}
                         <span className="tiny muted-2">{e.userName} · {formatTime(e.startedAt)}–{e.endedAt ? formatTime(e.endedAt) : '…'}</span>
                       </div>
@@ -500,7 +549,7 @@ export default function EntriesPage() {
             </div>
           </div>
 
-          <Field label="Tarea (título)">
+          <Field label="Título del registro" hint="Qué se hizo en este tramo. Aparece en el historial.">
             <input
               className="input"
               value={editForm.title}
@@ -508,6 +557,16 @@ export default function EntriesPage() {
               placeholder="Maquetación del login"
             />
           </Field>
+
+          <TaskPicker
+            tasks={tasks}
+            value={editForm.taskId}
+            newTitle={editForm.newTaskTitle}
+            projectId={editForm.projectId}
+            onChange={(v) => setEditForm({ ...editForm, taskId: v })}
+            onNewTitleChange={(t) => setEditForm({ ...editForm, newTaskTitle: t })}
+            hint="Mueve este registro a otra tarea, créale una nueva o déjalo sin tarea. El tiempo se acumula en la tarea."
+          />
 
           <div className="form-grid">
             <Field label="Cliente / Proyecto" hint="Al cambiar el proyecto se ajusta también el cliente del registro.">
@@ -672,10 +731,12 @@ export default function EntriesPage() {
             </>
           }
         >
+          <Alert kind="info">
+            Un registro de tiempo pertenece a una <b>tarea</b>: el tiempo de todos sus registros se acumula en ella. Si
+            no eliges ninguna, se busca (o crea) una tarea con el título del registro dentro del proyecto.
+          </Alert>
+
           <div className="form-grid">
-            <Field label="Título de la tarea">
-              <input className="input" value={manual.title} onChange={(e) => setManual({ ...manual, title: e.target.value })} placeholder="Corrección de login" />
-            </Field>
             <Field label="Proyecto">
               <select className="select" value={manual.projectId} onChange={(e) => setManual({ ...manual, projectId: e.target.value })}>
                 <option value="">Sin proyecto</option>
@@ -703,6 +764,19 @@ export default function EntriesPage() {
               <input className="input" type="datetime-local" value={manual.endedAt} onChange={(e) => setManual({ ...manual, endedAt: e.target.value })} />
             </Field>
           </div>
+
+          <TaskPicker
+            tasks={tasks}
+            value={manual.taskId}
+            newTitle={manual.newTaskTitle}
+            projectId={manual.projectId}
+            onChange={(v) => setManual({ ...manual, taskId: v })}
+            onNewTitleChange={(t) => setManual({ ...manual, newTaskTitle: t })}
+          />
+
+          <Field label="Título del registro" hint="Qué hiciste en este tramo. Es el texto que verás en el historial.">
+            <input className="input" value={manual.title} onChange={(e) => setManual({ ...manual, title: e.target.value })} placeholder="Corrección de login" />
+          </Field>
           <Field label="Detalle">
             <textarea className="textarea" value={manual.description} onChange={(e) => setManual({ ...manual, description: e.target.value })} />
           </Field>

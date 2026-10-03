@@ -215,6 +215,8 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
         userId: z.string().optional(),
         projectId: z.string().nullable().optional(),
         taskId: z.string().nullable().optional(),
+        /** Si se indica, se crea (o reutiliza) una tarea con ese título. */
+        newTaskTitle: z.string().min(2).max(200).optional(),
         taskTypeId: z.string().nullable().optional(),
         title: z.string().min(1).max(180),
         description: z.string().max(4000).nullable().optional(),
@@ -258,6 +260,18 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
       const tarea = await prisma.task.findUnique({ where: { id: d.taskId }, select: { id: true } });
       if (!tarea) return reply.code(400).send({ error: 'La tarea indicada no existe', code: 'TASK_NOT_FOUND' });
       taskId = tarea.id;
+    } else if (d.newTaskTitle) {
+      // Tarea nueva escrita a mano desde el panel: se crea dentro del proyecto
+      // elegido (o sin proyecto) y el registro queda enlazado a ella.
+      const tarea = await findOrCreateTask({
+        userId,
+        title: d.newTaskTitle,
+        projectId: project?.id ?? null,
+        clientId: project?.clientId ?? null,
+        taskTypeId: d.taskTypeId ?? null,
+        description: d.description ?? null,
+      });
+      taskId = tarea?.id ?? null;
     } else {
       const tarea = await findOrCreateTask({
         userId,
@@ -272,10 +286,6 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
     if (d.taskTypeId) {
       const tipo = await prisma.taskType.findUnique({ where: { id: d.taskTypeId }, select: { id: true } });
       if (!tipo) return reply.code(400).send({ error: 'El tipo de tarea indicado no existe', code: 'TASKTYPE_NOT_FOUND' });
-    }
-    if (d.taskId) {
-      const tarea = await prisma.task.findUnique({ where: { id: d.taskId }, select: { id: true } });
-      if (!tarea) return reply.code(400).send({ error: 'La tarea indicada no existe', code: 'TASK_NOT_FOUND' });
     }
 
     const entry = await prisma.timeEntry.create({
@@ -320,6 +330,8 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
         description: z.string().max(4000).nullable().optional(),
         projectId: z.string().nullable().optional(),
         taskId: z.string().nullable().optional(),
+        /** Si se indica, se crea (o reutiliza) una tarea con ese título. */
+        newTaskTitle: z.string().min(2).max(200).optional(),
         taskTypeId: z.string().nullable().optional(),
         startedAt: z.string().optional(),
         endedAt: z.string().nullable().optional(),
@@ -366,6 +378,33 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
       if (!tipo) return reply.code(400).send({ error: 'El tipo de tarea indicado no existe', code: 'TASKTYPE_NOT_FOUND' });
     }
 
+    // La tarea a la que pertenece el registro: se puede mover a otra existente,
+    // crear una nueva por título, o dejarlo sin tarea (`taskId: null`). Un id
+    // inexistente da 400 en lugar de dejar el registro apuntando al vacío.
+    const projectIdFinal = project !== undefined ? (project?.id ?? null) : existing.projectId;
+    const clientIdFinal = project !== undefined ? (project?.clientId ?? null) : existing.clientId;
+    let taskId: string | null | undefined;
+    if (d.newTaskTitle) {
+      const { findOrCreateTask } = await import('../services/task.service');
+      const tarea = await findOrCreateTask({
+        userId: existing.userId,
+        title: d.newTaskTitle,
+        projectId: projectIdFinal,
+        clientId: clientIdFinal,
+        taskTypeId: d.taskTypeId ?? existing.taskTypeId,
+        description: d.description ?? existing.description,
+      });
+      taskId = tarea?.id ?? null;
+    } else if (d.taskId !== undefined) {
+      if (d.taskId) {
+        const tarea = await prisma.task.findUnique({ where: { id: d.taskId }, select: { id: true } });
+        if (!tarea) return reply.code(400).send({ error: 'La tarea indicada no existe', code: 'TASK_NOT_FOUND' });
+        taskId = tarea.id;
+      } else {
+        taskId = null;
+      }
+    }
+
     const durationSec = endedAt
       ? Math.max(0, Math.floor((endedAt.getTime() - startedAt.getTime()) / 1000))
       : existing.durationSec;
@@ -376,7 +415,7 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
         ...(d.title !== undefined ? { title: d.title } : {}),
         ...(d.description !== undefined ? { description: d.description } : {}),
         ...(project !== undefined ? { projectId: project?.id ?? null, clientId: project?.clientId ?? null } : {}),
-        ...(d.taskId !== undefined ? { taskId: d.taskId } : {}),
+        ...(taskId !== undefined ? { taskId } : {}),
         ...(d.taskTypeId !== undefined ? { taskTypeId: d.taskTypeId } : {}),
         ...(d.startedAt !== undefined ? { startedAt } : {}),
         ...(d.endedAt !== undefined ? { endedAt } : {}),
@@ -385,7 +424,7 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
         ...(endedAt ? { durationSec } : {}),
         editedById: auth.userId,
       },
-      include: { user: { select: { fullName: true } }, project: { include: { client: true } }, client: true, taskType: true, tags: true },
+      include: { user: { select: { fullName: true } }, task: { select: { id: true, title: true, status: true } }, project: { include: { client: true } }, client: true, taskType: true, tags: true },
     });
     // Los acumulados de las tareas afectadas se recalculan desde sus tramos.
     const { recalcTaskTotals } = await import('../services/task.service');

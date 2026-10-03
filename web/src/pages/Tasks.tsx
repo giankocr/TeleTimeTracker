@@ -265,7 +265,7 @@ export default function TasksPage() {
         <div>
           <h1>Tareas</h1>
           <p className="page-sub">
-            Una tarea puede tener varios registros de tiempo: aquí ves el acumulado de cada una.
+            Una tarea puede tener uno o varios registros de tiempo: aquí ves el acumulado de cada una.
           </p>
         </div>
         <div className="row">
@@ -280,7 +280,7 @@ export default function TasksPage() {
       <div className="grid grid-3">
         <StatCard label="Tareas" value={total} sub={`${abiertas} abiertas o en curso`} icon="🗂" accent="#818cf8" />
         <StatCard label="Tiempo acumulado" value={formatHours(totalSeconds / 3600)} sub="suma de todos los tramos listados" icon="⏱" />
-        <StatCard label="Con varios tramos" value={multiTramo} sub="tareas retomadas más de una vez" icon="🔁" accent="#22d3ee" />
+        <StatCard label="Con varios registros" value={multiTramo} sub="tareas retomadas más de una vez" icon="🔁" accent="#22d3ee" />
       </div>
 
       <Card>
@@ -321,7 +321,7 @@ export default function TasksPage() {
                   <th>Tarea</th>
                   <th>Proyecto / Cliente</th>
                   <th>Responsable</th>
-                  <th className="right">Tramos</th>
+                  <th className="right" title="Registros de tiempo de esta tarea">Registros</th>
                   <th className="right">Tiempo</th>
                   <th>Estado</th>
                   <th className="right"></th>
@@ -360,7 +360,7 @@ export default function TasksPage() {
                     <td>
                       <div className="td-actions">
                         <button className="btn btn-sm" onClick={() => void openDetail(t)} title="Ver sus registros de tiempo">
-                          Ver tramos
+                          Ver registros
                         </button>
                         <Link className="btn btn-sm btn-ghost" to={`/registros?taskId=${t.id}`} title="Abrir sus registros en la vista de tiempo">
                           ⏱
@@ -439,7 +439,7 @@ export default function TasksPage() {
             <div>
               <h3>Registros de tiempo ({detail.entries.length})</h3>
               <span className="card-hint">
-                Cada fila es un tramo de trabajo de esta tarea. Se ven y editan también en «Registros de tiempo».
+                Una tarea puede tener uno o varios registros: cada fila es un tramo de trabajo de esta tarea. Se ven y editan también en «Registros de tiempo».
               </span>
             </div>
             <Link className="btn btn-sm" to={`/registros?taskId=${detail.task.id}`}>
@@ -530,7 +530,7 @@ export default function TasksPage() {
         >
           {formFields}
           <Alert kind="info">
-            Cambiar el título o el proyecto no altera los tramos ya registrados: siguen enlazados a esta tarea.
+            Cambiar el título o el proyecto no altera los registros ya grabados: siguen enlazados a esta tarea.
           </Alert>
         </Modal>
       ) : null}

@@ -240,6 +240,9 @@ export async function listTasks(params: {
     tasks: rows.map((t) => ({
       id: t.id,
       title: t.title,
+      // El panel usa `projectId` para ofrecer solo las tareas del proyecto elegido
+      // al asignar un registro de tiempo.
+      projectId: t.projectId,
       status: t.status,
       statusLabel: TASK_STATUS_LABEL[t.status] ?? t.status,
       projectName: t.project?.name ?? null,
