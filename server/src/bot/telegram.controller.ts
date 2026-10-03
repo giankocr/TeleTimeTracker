@@ -58,6 +58,7 @@ import {
   type HandlerUser,
 } from '../services/assistant.service';
 import { SETTING_KEYS, getSetting } from '../services/settings.service';
+import { humanDuration } from '../utils/format';
 import type { ResolvedProject } from '../services/resolve.service';
 
 /**
@@ -297,6 +298,30 @@ async function handleSlashCommand(message: CommandInput, user: LinkedUser | null
     case '/agenda': {
       const [tasks, entry] = await Promise.all([pendingTasksFor(user.id), getActiveEntry(user.id)]);
       return { handled: true, text: agendaMessage(tasks, entry?.title ?? null, user.timezone) };
+    }
+    case '/tareas':
+    case '/tasks': {
+      const { openTasksFor } = await import('../services/task.service');
+      const tareas = await openTasksFor(user.id, 12);
+      if (!tareas.length) {
+        return {
+          handled: true,
+          text:
+            '📋 No tienes tareas abiertas.\n\nSe crean solas cuando dictas o escribes en qué trabajas:\n' +
+            '<i>«iniciando maquetación del login en el proyecto Portal Web»</i>',
+        };
+      }
+      const lineas = ['📋 <b>Tus tareas</b>', ''];
+      for (const t of tareas) {
+        const abierta = t.status === 'IN_PROGRESS';
+        const tiempo = humanDuration(t.totalSeconds);
+        const proyecto = t.project?.name ? ` · <i>${t.project.name}</i>` : '';
+        const tramos = t.entryCount === 1 ? '1 tramo' : `${t.entryCount} tramos`;
+        lineas.push(`${abierta ? '🟢' : '⚪️'} <b>${t.title}</b>${proyecto}`);
+        lineas.push(`     ⏱ ${tiempo} en ${tramos}`);
+      }
+      lineas.push('', '<i>/tiempo NOMBRE para el detalle de una tarea concreta.</i>');
+      return { handled: true, text: lineas.join('\n') };
     }
     case '/tiempo':
     case '/time': {

@@ -29,6 +29,8 @@ export default function EntriesPage() {
   const [clientId, setClientId] = useState('');
   const [projectId, setProjectId] = useState('');
   const [userId, setUserId] = useState('');
+  const [taskId, setTaskId] = useState('');
+  const [tasks, setTasks] = useState<any[]>([]);
 
   const [data, setData] = useState<any | null>(null);
   const [active, setActive] = useState<any | null>(null);
@@ -64,7 +66,7 @@ export default function EntriesPage() {
     setLoading(true);
     try {
       const [entries, activeRes] = await Promise.all([
-        api.get<any>('/entries', { preset, status: status || undefined, search: search || undefined, clientId: clientId || undefined, projectId: projectId || undefined, userId: userId || undefined, take: 200 }),
+        api.get<any>('/entries', { preset, status: status || undefined, search: search || undefined, clientId: clientId || undefined, projectId: projectId || undefined, taskId: taskId || undefined, userId: userId || undefined, take: 200 }),
         api.get<{ entry: any }>('/entries/active'),
       ]);
       setData(entries);
@@ -74,7 +76,7 @@ export default function EntriesPage() {
     } finally {
       setLoading(false);
     }
-  }, [preset, status, search, clientId, projectId, userId, push]);
+  }, [preset, status, search, clientId, projectId, taskId, userId, push]);
 
   useEffect(() => {
     const t = setTimeout(() => void load(), 250);
@@ -88,16 +90,18 @@ export default function EntriesPage() {
 
   useEffect(() => {
     void (async () => {
-      const [c, p, u, t] = await Promise.all([
+      const [c, p, u, t, tk] = await Promise.all([
         api.get<{ clients: any[] }>('/clients').catch(() => ({ clients: [] })),
         api.get<{ projects: any[] }>('/projects').catch(() => ({ projects: [] })),
         api.get<{ users: any[] }>('/users').catch(() => ({ users: [] })),
         api.get<{ taskTypes: any[] }>('/task-types').catch(() => ({ taskTypes: [] })),
+        api.get<{ tasks: any[] }>('/tasks', { take: 300 }).catch(() => ({ tasks: [] })),
       ]);
       setClients(c.clients);
       setProjects(p.projects);
       setUsers(u.users);
       setTaskTypes(t.taskTypes);
+      setTasks(tk.tasks);
     })();
   }, []);
 
@@ -327,6 +331,14 @@ export default function EntriesPage() {
                 </option>
               ))}
           </select>
+          <select className="select" style={{ width: 'auto' }} value={taskId} onChange={(e) => setTaskId(e.target.value)}>
+            <option value="">Todas las tareas</option>
+            {tasks.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.title}
+              </option>
+            ))}
+          </select>
           {users.length > 1 ? (
             <select className="select" style={{ width: 'auto' }} value={userId} onChange={(e) => setUserId(e.target.value)}>
               <option value="">Todas las personas</option>
@@ -350,7 +362,7 @@ export default function EntriesPage() {
                 <tr>
                   <th>Inicio</th>
                   <th>Tarea</th>
-                  <th>Cliente / Proyecto</th>
+                  <th>Proyecto</th>
                   <th>Tipo</th>
                   <th>Origen</th>
                   <th className="right">Duración</th>
@@ -367,10 +379,17 @@ export default function EntriesPage() {
                       <span className="tiny muted-2">→ {e.endedAt ? formatTime(e.endedAt) : 'en curso'}</span>
                     </td>
                     <td>
-                      <div className="stack-sm" style={{ gap: 1, maxWidth: 320 }}>
-                        <strong>{e.title ?? 'Sin título'}</strong>
-                        {e.description ? <span className="tiny muted-2">{e.description.slice(0, 90)}</span> : null}
-                        <span className="tiny muted-2">{e.userName}</span>
+                      <div className="stack-sm" style={{ gap: 1, maxWidth: 340 }}>
+                        <strong>{e.taskTitle ?? e.title ?? 'Sin tarea'}</strong>
+                        {e.taskId ? (
+                          <span className="tiny badge badge-primary" style={{ alignSelf: 'flex-start' }}>
+                            {e.taskTitle ? 'tarea' : 'sin título'}: {String(e.taskId).slice(0, 10)}
+                          </span>
+                        ) : (
+                          <span className="tiny muted-2">sin tarea asociada</span>
+                        )}
+                        {e.description ? <span className="tiny muted-2">{e.description.slice(0, 80)}</span> : null}
+                        <span className="tiny muted-2">{e.userName} · {formatTime(e.startedAt)}–{e.endedAt ? formatTime(e.endedAt) : '…'}</span>
                       </div>
                     </td>
                     <td className="small">

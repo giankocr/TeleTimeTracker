@@ -118,6 +118,34 @@ SQLite por defecto (archivo en `/app/data`), con opción de PostgreSQL cambiando
 - **MANAGER** → gestiona clientes/proyectos y ve los reportes de su equipo (`reports:team`).
 - **USER** → registra su tiempo y consulta su propio historial (`reports:own`).
 
+### Jerarquía de datos: Cliente → Proyecto → Tarea → Registro de tiempo
+
+**Una tarea NO es un registro de tiempo.** La tarea es la unidad de trabajo (con su ciclo de vida y su acumulado) y puede tener **varios registros de tiempo**: cada vez que se empieza, se pausa para otra cosa y se retoma, se abre un **tramo** nuevo.
+
+```
+Cliente (Acme)
+└── Proyecto (Portal Web)
+    └── Tarea (Maquetación del login)   ← totalSeconds acumulado
+        ├── Registro de tiempo  09:00–10:00   (tramo 1)
+        ├── Registro de tiempo  14:00–14:30   (tramo 2, al retomar)
+        └── Registro de tiempo  09:00–09:20   (tramo 3, otro día)
+```
+
+| Modelo | Qué es | Campos propios |
+|---|---|---|
+| **Task** | Unidad de trabajo reutilizable | `title`, `status` (OPEN/IN_PROGRESS/DONE/CANCELLED), `priority`, `estimatedHours`, `dueDate`, acumulados `totalSeconds` / `entryCount` / `firstWorkedAt` / `lastWorkedAt` |
+| **TimeEntry** | Un tramo trabajado | `taskId`, `startedAt`, `endedAt`, `durationSec`, `status`, `source` (voz/texto/botón/web), `billable` |
+| **TaskType** | Categoría del trabajo | `name`, `aliases` (para el NLU), `billable` |
+
+Reglas del modelo:
+
+- **Los acumulados se derivan de los tramos** (`recalcTaskTotals`), no se incrementan a mano: si se edita o borra un tramo, el total de la tarea se recalcula y nunca se desvía.
+- **El estado no se deduce del tiempo**: registrar un tramo pasado no marca la tarea como completada (eso fue un bug real). Se marca **EN CURSO** cuando se empieza a trabajar y **COMPLETADA** solo por acción explícita (botón ✓ en el panel, o al cerrarla). Un tramo abierto siempre implica tarea en curso.
+- **Reutilización**: al dictar o escribir una tarea, se busca por título normalizado (sin acentos ni mayúsculas) dentro del mismo proyecto y se reutiliza si sigue abierta; solo se crea una nueva si no existe. Así «maquetación del login» de tres días distintos es **una tarea con 3 tramos**, no tres tareas.
+- **Herencia**: el registro hereda proyecto, cliente y tipo de la tarea; y la tarea los hereda del proyecto.
+
+**Migración de datos existentes** (`20261003010000_tasks_entity`): crea la tabla `tasks` y convierte los registros antiguos en tareas **agrupando** por (título + proyecto + tipo + usuario), con sus acumulados sumados, y enlaza cada registro con su tarea. Los ids son `tarea_<min id del grupo>`, deterministas, así que la migración es idempotente. Verificado con datos reales: 3 tramos de «Maquetación del login» + 1 de «Reunión» → **2 tareas** (`entryCount=3`, `totalSeconds=6600`) y 4 registros enlazados, en SQLite **y** en MySQL 8.4.
+
 ### Clientes, proyectos y tipos de tarea
 
 | Modelo | Campos clave |
@@ -166,6 +194,7 @@ Tablas de apoyo: **Pause** (pausas con motivo y duración), **EntryTag** (etique
 | `/reporte [hoy\|ayer\|semana\|mes]` | Resumen de horas del periodo |
 | `/pendientes` | Lista de tareas pendientes (backlog) |
 | `/pausar`, `/retomar`, `/terminar`, `/cancelar` | Control del cronómetro |
+| `/tareas` | 📋 Tus tareas con el **tiempo acumulado** y cuántos tramos tiene cada una |
 | `/tiempo TAREA` | **Tiempo consumido** en una tarea o proyecto (`/tiempo login`, `/tiempo Portal Web`) |
 | `/nuevo` | ➕ **Menú para crear**: cliente, proyecto o tipo de tarea |
 | `/menu` | 📋 Menú con botones y todos los comandos |
@@ -398,6 +427,7 @@ Al cerrar una tarea, si el proyecto tiene `githubRepos`, se consultan **commits 
 |---|---|
 | **Login** | Tres vías: **Telegram (un clic)**, **Teléfono + código por el bot** y **Correo + contraseña**, con JWT y refresh rotativo |
 | **Dashboard** | Totales, facturables, promedio por persona, gráficos por día/cliente/tipo, "ahora mismo" con cronómetros vivos |
+| **Tareas** | Listado con el **acumulado por tarea** (tiempo, nº de tramos, primera/última vez trabajada), detalle con **todos sus registros de tiempo**, creación manual, cambio de estado y reapertura |
 | **Registros** | Historial filtrable (rango, estado, cliente, proyecto, persona), cronómetro propio, registro manual, export CSV, **✏️ editar** cualquier registro (tarea, cliente/proyecto, tipo, horas, facturable, estado) y **anular / eliminar / restaurar** (solo admin) |
 | **Reportes** | Ranking del equipo, horas por cliente/proyecto/tipo, export CSV |
 | **Pendientes** | Backlog personal que alimenta el digest del bot |
@@ -684,7 +714,8 @@ docker compose up -d --build
 | `GET/PATCH` | `/api/auth/me` · `POST /api/auth/change-password` | Perfil propio |
 | `POST` | `/api/auth/telegram/link-code` | Código de vinculación |
 | `GET/POST/PATCH/DELETE` | `/api/users`, `/api/roles`, `/api/clients`, `/api/projects`, `/api/task-types`, `/api/pending-tasks` | CRUD del catálogo |
-| `GET` | `/api/entries` · `/api/entries/active` | Historial y cronómetro |
+| `GET` | `/api/entries` · `/api/entries/active` | Historial (filtrable por `taskId`) y cronómetro |
+| `GET/POST/PATCH/DELETE` | `/api/tasks` · `/api/tasks/:id` | Tareas: listado con acumulados, detalle con sus tramos, alta, edición y borrado |
 | `POST` | `/api/entries/start` · `/pause` · `/resume` · `/stop` · `/cancel` | Control del cronómetro |
 | `PATCH` | `/api/entries/:id` | **Edita** un registro: título, proyecto (ajusta el cliente), tipo, inicio/fin (recalcula la duración), facturable y estado |
 | `DELETE` | `/api/entries/:id` | **Anula** el registro (recuperable). Con `?hard=1` lo **elimina** de la base |
@@ -779,6 +810,8 @@ El proyecto se validó de extremo a extremo:
 - **Login OIDC (vigente)**: `id_token` válido → sesión y RBAC; firma ajena, `aud` o `iss` incorrectos, token expirado y `alg: none` → rechazados con el código de error correspondiente; `nonce` verificado; el `phone_number` del token se guarda en el perfil; cabecera `Cross-Origin-Opener-Policy: same-origin-allow-popups` presente (sin ella el popup de Telegram no comunica).
 - **Primer administrador desde el bot**: con la base vacía, compartir el teléfono crea un `ADMIN` vinculado, devuelve un código de 6 dígitos que **inicia sesión correctamente** (`200`, rol ADMIN) y deja al usuario crear clientes (`201`) y listar usuarios (`200`). Con la base ya poblada, el mismo gesto queda como solicitud pendiente.
 - **Audio → registro**: con la cuenta vinculada, una nota de voz se transcribe y crea el registro con **cliente, proyecto y tipo** (`Acme` / `Portal Web` / `Maquetacion`), y el segundo audio reconoce el proyecto y arranca directo (2 registros).
+- **Tarea con varios registros**: 3 tramos de «Maquetación del login» → **una** tarea con `entryCount=3` y `totalSeconds=6600`; al retomarla se añade un 4.º tramo a la **misma** tarea (sigue habiendo 2 tareas en total); el detalle lista sus tramos con fechas y duraciones; filtrar registros por `taskId` devuelve sus 4 tramos; borrar un tramo recalcula el acumulado (3 tramos, 3600 s).
+- **Migración agrupada**: los registros previos se convierten en tareas por grupo (3 tramos + 1 → 2 tareas) en SQLite y en MySQL 8.4, con los acumulados sumados y todos los registros enlazados.
 - **Editar registros**: cambiar el título, **mover a otro proyecto** (el cliente se deduce del proyecto: `Cliente A` → `Cliente B`), asignar tipo, recalcular horas (1h → 2h 30m = 9000 s), marcar/desmarcar facturable, dejar el registro **sin proyecto ni tipo**, con validaciones (`fin anterior al inicio` → 400, `fecha inválida` → 400, **proyecto inexistente → 400** en lugar de dejar el registro vacío en silencio) y sin acceso a registros ajenos (`403`).
 - **Eliminar clientes y proyectos**: MANAGER recibe `403` en ambos (`clients:delete` y `projects:delete` solo los tiene ADMIN). El impacto se calcula antes (proyecto A: 2 registros / 3 h; cliente Uno: 2 proyectos / 3 registros / 4 h), la reasignación mueve las horas (2 registros movidos, el proyecto destino pasa a 4 h y quedan **0 huérfanos**), el borrado en cascada elimina los proyectos del cliente, y **borrar sin `force` se bloquea con `409 WOULD_ORPHAN_ENTRIES`** cuando dejaría horas sin cliente/proyecto (con `force=1` procede, y si no hay horas asociadas no bloquea).
 - **Gestión de registros por el admin**: un MANAGER/USER recibe `403` al intentar anular o eliminar (`entries:delete` solo lo tiene ADMIN). Anular baja las horas del reporte (3h → 2h) y **restaurar las devuelve exactas** (2h → 3h, 3600s en el registro); el borrado definitivo saca el registro de la base (el `PATCH` posterior da 404), elimina sus pausas en cascada y deja el resumen en la auditoría. Anular una tarea **en curso** y restaurarla devuelve su tiempo exacto (6s).

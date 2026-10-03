@@ -35,6 +35,7 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
         userId: z.string().optional(),
         clientId: z.string().optional(),
         projectId: z.string().optional(),
+        taskId: z.string().optional(),
         status: z.enum(['RUNNING', 'PAUSED', 'FINISHED', 'CANCELLED']).optional(),
         search: z.string().max(120).optional(),
         take: z.coerce.number().int().min(1).max(500).optional(),
@@ -76,6 +77,7 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
       userIds,
       clientId: f.clientId,
       projectId: f.projectId,
+      taskId: f.taskId,
       status: f.status,
       search: f.search,
       take: f.take ?? 100,
@@ -203,6 +205,7 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
       .object({
         userId: z.string().optional(),
         projectId: z.string().nullable().optional(),
+        taskId: z.string().nullable().optional(),
         taskTypeId: z.string().nullable().optional(),
         title: z.string().min(1).max(180),
         description: z.string().max(4000).nullable().optional(),
@@ -236,14 +239,40 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!project) return reply.code(400).send({ error: 'El proyecto indicado no existe', code: 'PROJECT_NOT_FOUND' });
     }
+
+    // El registro manual también pertenece a una TAREA: si se indica una, se usa;
+    // si no, se busca por título en el proyecto y se crea. Así el tiempo queda
+    // agrupado por tarea igual que cuando se registra con el cronómetro.
+    const { findOrCreateTask, recalcTaskTotals } = await import('../services/task.service');
+    let taskId: string | null = null;
+    if (d.taskId) {
+      const tarea = await prisma.task.findUnique({ where: { id: d.taskId }, select: { id: true } });
+      if (!tarea) return reply.code(400).send({ error: 'La tarea indicada no existe', code: 'TASK_NOT_FOUND' });
+      taskId = tarea.id;
+    } else {
+      const tarea = await findOrCreateTask({
+        userId,
+        title: d.title,
+        projectId: project?.id ?? null,
+        clientId: project?.clientId ?? null,
+        taskTypeId: d.taskTypeId ?? null,
+        description: d.description ?? null,
+      });
+      taskId = tarea?.id ?? null;
+    }
     if (d.taskTypeId) {
       const tipo = await prisma.taskType.findUnique({ where: { id: d.taskTypeId }, select: { id: true } });
       if (!tipo) return reply.code(400).send({ error: 'El tipo de tarea indicado no existe', code: 'TASKTYPE_NOT_FOUND' });
+    }
+    if (d.taskId) {
+      const tarea = await prisma.task.findUnique({ where: { id: d.taskId }, select: { id: true } });
+      if (!tarea) return reply.code(400).send({ error: 'La tarea indicada no existe', code: 'TASK_NOT_FOUND' });
     }
 
     const entry = await prisma.timeEntry.create({
       data: {
         userId,
+        taskId,
         projectId: project?.id ?? null,
         clientId: project?.clientId ?? null,
         taskTypeId: d.taskTypeId ?? null,
@@ -258,8 +287,15 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
         closeReason: 'MANUAL_WEB',
         editedById: auth.userId,
       },
-      include: { user: { select: { fullName: true } }, project: { include: { client: true } }, client: true, taskType: true, tags: true },
+      include: { user: { select: { fullName: true } }, task: { select: { id: true, title: true, status: true } }, project: { include: { client: true } }, client: true, taskType: true, tags: true },
     });
+    if (taskId) {
+      // Registrar tiempo implica que se trabajo en la tarea: pasa a EN CURSO.
+      const { markTaskStatus } = await import('../services/task.service');
+      await markTaskStatus(taskId, 'IN_PROGRESS');
+      await recalcTaskTotals(taskId);
+    }
+
     await audit(request, { action: 'entry.create_manual', entity: 'timeEntry', entityId: entry.id });
     return reply.code(201).send({ entry: serializeEntry(entry as any) });
   });
@@ -274,6 +310,7 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
         title: z.string().min(1).max(180).optional(),
         description: z.string().max(4000).nullable().optional(),
         projectId: z.string().nullable().optional(),
+        taskId: z.string().nullable().optional(),
         taskTypeId: z.string().nullable().optional(),
         startedAt: z.string().optional(),
         endedAt: z.string().nullable().optional(),
@@ -330,6 +367,7 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
         ...(d.title !== undefined ? { title: d.title } : {}),
         ...(d.description !== undefined ? { description: d.description } : {}),
         ...(project !== undefined ? { projectId: project?.id ?? null, clientId: project?.clientId ?? null } : {}),
+        ...(d.taskId !== undefined ? { taskId: d.taskId } : {}),
         ...(d.taskTypeId !== undefined ? { taskTypeId: d.taskTypeId } : {}),
         ...(d.startedAt !== undefined ? { startedAt } : {}),
         ...(d.endedAt !== undefined ? { endedAt } : {}),
@@ -340,6 +378,11 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
       },
       include: { user: { select: { fullName: true } }, project: { include: { client: true } }, client: true, taskType: true, tags: true },
     });
+    // Los acumulados de las tareas afectadas se recalculan desde sus tramos.
+    const { recalcTaskTotals } = await import('../services/task.service');
+    if (existing.taskId) await recalcTaskTotals(existing.taskId);
+    if (entry.taskId && entry.taskId !== existing.taskId) await recalcTaskTotals(entry.taskId);
+
     await audit(request, { action: 'entry.update', entity: 'timeEntry', entityId: id, metadata: d });
     return reply.send({ entry: serializeEntry(entry as any) });
   });
@@ -390,6 +433,12 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
 
       // Las pausas y las etiquetas se eliminan en cascada (onDelete: Cascade).
       await prisma.timeEntry.delete({ where: { id } });
+
+      // Los acumulados de la tarea se recalculan: al borrar un tramo cambian.
+      if (existing.taskId) {
+        const { recalcTaskTotals } = await import('../services/task.service');
+        await recalcTaskTotals(existing.taskId);
+      }
       await audit(request, {
         action: 'entry.delete_hard',
         entity: 'timeEntry',
@@ -425,6 +474,11 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
           : existing.description,
       },
     });
+    if (existing.taskId) {
+      const { recalcTaskTotals } = await import('../services/task.service');
+      await recalcTaskTotals(existing.taskId);
+    }
+
     await audit(request, { action: 'entry.cancel', entity: 'timeEntry', entityId: id });
     return reply.send({ ok: true, cancelled: true });
   });
@@ -469,6 +523,11 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
         tags: true,
       },
     });
+    if (restored.taskId) {
+      const { recalcTaskTotals } = await import('../services/task.service');
+      await recalcTaskTotals(restored.taskId);
+    }
+
     await audit(request, { action: 'entry.restore', entity: 'timeEntry', entityId: id, metadata: { durationSec: totalSeg } });
     return reply.send({ entry: serializeEntry(restored as any) });
   });

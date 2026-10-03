@@ -32,6 +32,7 @@ interface RawEntry {
   taskTypeId: string | null;
   client: { name: string } | null;
   project: { name: string; client: { name: string } | null } | null;
+  task: { id: string; title: string; status: string } | null;
   taskType: { name: string } | null;
   user: { fullName: string };
 }
@@ -172,6 +173,7 @@ export async function listEntries(params: {
   userIds?: string[];
   clientId?: string;
   projectId?: string;
+  taskId?: string;
   status?: string;
   search?: string;
   take?: number;
@@ -182,6 +184,7 @@ export async function listEntries(params: {
     ...(params.userIds && params.userIds.length ? { userId: { in: params.userIds } } : {}),
     ...(params.clientId ? { clientId: params.clientId } : {}),
     ...(params.projectId ? { projectId: params.projectId } : {}),
+    ...(params.taskId ? { taskId: params.taskId } : {}),
     ...(params.status ? { status: params.status } : {}),
     ...(params.search
       ? { OR: [{ title: { contains: params.search } }, { description: { contains: params.search } }] }
@@ -193,6 +196,7 @@ export async function listEntries(params: {
       where,
       include: {
         user: { select: { fullName: true } },
+        task: { select: { id: true, title: true, status: true } },
         project: { include: { client: true } },
         client: true,
         taskType: true,

@@ -64,6 +64,12 @@ const NATIVE_TYPES = {
   },
   ProjectMember: { role: 'VarChar(16)' },
   // `aliases` tambien lleva DEFAULT '' -> no puede ser TEXT (error 1101 de MySQL).
+  Task: {
+    title: 'VarChar(200)',
+    description: 'Text',
+    status: 'VarChar(16)',
+    priority: 'VarChar(10)',
+  },
   TaskType: { name: 'VarChar(60)', aliases: 'VarChar(300)', color: 'VarChar(9)' },
 
   // --- tiempos ---

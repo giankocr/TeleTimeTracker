@@ -16,6 +16,7 @@ const NAV: Array<{ section: string; items: NavItem[] }> = [
     section: 'Operación',
     items: [
       { to: '/', label: 'Dashboard', icon: '📊' },
+      { to: '/tareas', label: 'Tareas', icon: '🗂', permission: 'entries:read:own' },
       { to: '/registros', label: 'Registros', icon: '⏱', permission: 'entries:read:own' },
       { to: '/reportes', label: 'Reportes', icon: '📈', permission: 'reports:own' },
       { to: '/pendientes', label: 'Mis pendientes', icon: '📝' },

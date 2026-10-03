@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { PERMISSIONS } from '../../../shared/types';
-import { authenticate, hasPermission, requirePermission } from '../middleware/auth';
+import { authenticate, hasPermission, requirePermission, visibleUserIds } from '../middleware/auth';
 import { audit } from '../utils/audit';
 
 /**
@@ -466,6 +466,220 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
     await prisma.clientProject.update({ where: { id }, data: { isActive: false } });
     await audit(request, { action: 'project.deactivate', entity: 'project', entityId: id });
     return reply.send({ ok: true, deactivated: true });
+  });
+
+  // =========================================================================
+  // TAREAS (Cliente -> Proyecto -> Tarea -> Registros de tiempo)
+  //
+  // Una tarea agrupa VARIOS registros de tiempo: sus acumulados (totalSeconds,
+  // entryCount, primera y ultima vez trabajada) los mantiene el motor de tiempo.
+  // =========================================================================
+  app.get('/tasks', { preHandler: [authenticate] }, async (request, reply) => {
+    const q = z
+      .object({
+        projectId: z.string().optional(),
+        clientId: z.string().optional(),
+        assigneeId: z.string().optional(),
+        status: z.enum(['OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED']).optional(),
+        search: z.string().max(120).optional(),
+        scope: z.enum(['mine', 'all']).optional(),
+        take: z.coerce.number().int().min(1).max(500).optional(),
+        skip: z.coerce.number().int().min(0).optional(),
+      })
+      .safeParse(request.query);
+    const f = q.success ? q.data : {};
+    const auth = request.auth!;
+
+    const visible = await visibleUserIds(auth);
+    let userIds: string[] | undefined;
+    if (f.scope === 'mine' || !visible.all) {
+      userIds = f.assigneeId ? [f.assigneeId] : visible.all ? [auth.userId] : visible.ids;
+    } else if (f.assigneeId) {
+      userIds = [f.assigneeId];
+    }
+
+    const { listTasks } = await import('../services/task.service');
+    const result = await listTasks({
+      userIds,
+      projectId: f.projectId,
+      clientId: f.clientId,
+      status: f.status,
+      search: f.search,
+      take: f.take ?? 100,
+      skip: f.skip ?? 0,
+    });
+    return reply.send(result);
+  });
+
+  /** Detalle de una tarea con TODOS sus tramos de tiempo. */
+  app.get('/tasks/:id', { preHandler: [authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { taskContext } = await import('../services/task.service');
+    const task = await taskContext(id);
+    if (!task) return reply.code(404).send({ error: 'Tarea no encontrada' });
+
+    const visible = await visibleUserIds(request.auth!);
+    if (!visible.all && task.assigneeId && !visible.ids.includes(task.assigneeId)) {
+      return reply.code(403).send({ error: 'Sin acceso a esta tarea' });
+    }
+
+    const entries = await prisma.timeEntry.findMany({
+      where: { taskId: id },
+      include: { user: { select: { fullName: true } }, project: true, client: true, taskType: true, tags: true },
+      orderBy: { startedAt: 'desc' },
+    });
+
+    const { serializeEntries } = await import('../services/entries.service');
+    return reply.send({
+      task: {
+        id: task.id,
+        title: task.title,
+        description: task.description,
+        status: task.status,
+        priority: task.priority,
+        estimatedHours: task.estimatedHours,
+        dueDate: task.dueDate?.toISOString() ?? null,
+        projectId: task.projectId,
+        projectName: task.project?.name ?? null,
+        clientId: task.clientId,
+        clientName: task.client?.name ?? task.project?.client?.name ?? null,
+        taskTypeId: task.taskTypeId,
+        taskTypeName: task.taskType?.name ?? null,
+        assigneeId: task.assigneeId,
+        assigneeName: task.assignee?.fullName ?? null,
+        totalSeconds: task.totalSeconds,
+        entryCount: task.entryCount,
+        firstWorkedAt: task.firstWorkedAt?.toISOString() ?? null,
+        lastWorkedAt: task.lastWorkedAt?.toISOString() ?? null,
+        createdAt: task.createdAt.toISOString(),
+      },
+      entries: serializeEntries(entries as any[]),
+    });
+  });
+
+  /** Crea una tarea (sin necesidad de registrar tiempo todavia). */
+  app.post('/tasks', { preHandler: [requirePermission(PERMISSIONS.ENTRIES_WRITE)] }, async (request, reply) => {
+    const parsed = z
+      .object({
+        title: z.string().min(2).max(200),
+        description: z.string().max(4000).nullable().optional(),
+        projectId: z.string().nullable().optional(),
+        taskTypeId: z.string().nullable().optional(),
+        assigneeId: z.string().nullable().optional(),
+        estimatedHours: z.number().positive().nullable().optional(),
+        priority: z.enum(['LOW', 'NORMAL', 'HIGH']).optional(),
+        dueDate: z.string().nullable().optional(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Datos invalidos' });
+    const d = parsed.data;
+    const auth = request.auth!;
+
+    let project: { id: string; clientId: string } | null = null;
+    if (d.projectId) {
+      project = await prisma.clientProject.findUnique({ where: { id: d.projectId }, select: { id: true, clientId: true } });
+      if (!project) return reply.code(400).send({ error: 'El proyecto indicado no existe', code: 'PROJECT_NOT_FOUND' });
+    }
+
+    const task = await prisma.task.create({
+      data: {
+        title: d.title.trim(),
+        description: d.description ?? null,
+        projectId: project?.id ?? null,
+        clientId: project?.clientId ?? null,
+        taskTypeId: d.taskTypeId ?? null,
+        assigneeId: d.assigneeId ?? auth.userId,
+        createdById: auth.userId,
+        estimatedHours: d.estimatedHours ?? null,
+        priority: d.priority ?? 'NORMAL',
+        dueDate: d.dueDate ? new Date(d.dueDate) : null,
+        status: 'OPEN',
+      },
+    });
+    await audit(request, { action: 'task.create', entity: 'task', entityId: task.id });
+    return reply.code(201).send({ task });
+  });
+
+  /** Edita una tarea (titulo, proyecto, tipo, estado, estimacion...). */
+  app.patch('/tasks/:id', { preHandler: [requirePermission(PERMISSIONS.ENTRIES_WRITE)] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = z
+      .object({
+        title: z.string().min(2).max(200).optional(),
+        description: z.string().max(4000).nullable().optional(),
+        projectId: z.string().nullable().optional(),
+        taskTypeId: z.string().nullable().optional(),
+        assigneeId: z.string().nullable().optional(),
+        status: z.enum(['OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED']).optional(),
+        estimatedHours: z.number().positive().nullable().optional(),
+        priority: z.enum(['LOW', 'NORMAL', 'HIGH']).optional(),
+        dueDate: z.string().nullable().optional(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Datos invalidos' });
+    const d = parsed.data;
+
+    const actual = await prisma.task.findUnique({ where: { id } });
+    if (!actual) return reply.code(404).send({ error: 'Tarea no encontrada' });
+
+    let project: { id: string; clientId: string } | null | undefined;
+    if (d.projectId !== undefined) {
+      if (d.projectId) {
+        const encontrado = await prisma.clientProject.findUnique({
+          where: { id: d.projectId },
+          select: { id: true, clientId: true },
+        });
+        if (!encontrado) return reply.code(400).send({ error: 'El proyecto indicado no existe', code: 'PROJECT_NOT_FOUND' });
+        project = encontrado;
+      } else {
+        project = null;
+      }
+    }
+
+    const task = await prisma.task.update({
+      where: { id },
+      data: {
+        ...(d.title !== undefined ? { title: d.title.trim() } : {}),
+        ...(d.description !== undefined ? { description: d.description } : {}),
+        ...(project !== undefined ? { projectId: project?.id ?? null, clientId: project?.clientId ?? null } : {}),
+        ...(d.taskTypeId !== undefined ? { taskTypeId: d.taskTypeId } : {}),
+        ...(d.assigneeId !== undefined ? { assigneeId: d.assigneeId } : {}),
+        ...(d.status !== undefined ? { status: d.status, completedAt: d.status === 'DONE' ? new Date() : null } : {}),
+        ...(d.estimatedHours !== undefined ? { estimatedHours: d.estimatedHours } : {}),
+        ...(d.priority !== undefined ? { priority: d.priority } : {}),
+        ...(d.dueDate !== undefined ? { dueDate: d.dueDate ? new Date(d.dueDate) : null } : {}),
+      },
+    });
+
+    // Al mover la tarea de proyecto, sus tramos acompanan la jerarquia.
+    if (project !== undefined) {
+      await prisma.timeEntry.updateMany({
+        where: { taskId: id },
+        data: { projectId: project?.id ?? null, clientId: project?.clientId ?? null },
+      });
+    }
+
+    await audit(request, { action: 'task.update', entity: 'task', entityId: id, metadata: d });
+    return reply.send({ task });
+  });
+
+  /** Elimina una tarea. Sus tramos se conservan, desvinculados. */
+  app.delete('/tasks/:id', { preHandler: [requirePermission(PERMISSIONS.ENTRIES_DELETE)] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const task = await prisma.task.findUnique({ where: { id } });
+    if (!task) return reply.code(404).send({ error: 'Tarea no encontrada' });
+
+    const tramos = await prisma.timeEntry.count({ where: { taskId: id } });
+    await prisma.task.delete({ where: { id } });
+    await audit(request, { action: 'task.delete', entity: 'task', entityId: id, metadata: { title: task.title, entries: tramos } });
+
+    return reply.send({
+      ok: true,
+      orphanedEntries: tramos,
+      message: tramos
+        ? `Tarea eliminada. Sus ${tramos} registro(s) de tiempo se conservan, pero sin tarea asignada.`
+        : 'Tarea eliminada.',
+    });
   });
 
   // =========================================================================

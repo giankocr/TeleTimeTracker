@@ -4,6 +4,7 @@ import { cleanTitle } from './nlu.service';
 import { resolveGithubRepos } from './github.service';
 import { isoSecondsSince } from '../utils/format';
 import { Prisma } from '@prisma/client';
+import { findOrCreateTask, markTaskStatus, recalcTaskTotals } from './task.service';
 
 /**
  * MOTOR DE TIEMPO (state machine).
@@ -19,6 +20,7 @@ import { Prisma } from '@prisma/client';
 export type EntryWithRelations = Prisma.TimeEntryGetPayload<{ include: typeof entryInclude }>;
 
 const entryInclude = {
+  task: true,
   project: { include: { client: true } },
   client: true,
   taskType: true,
@@ -61,6 +63,8 @@ export interface StartOptions {
   userId: string;
   roleKey: string;
   rawText: string;
+  /** Tarea existente a la que pertenece este tramo. */
+  taskId?: string | null;
   project?: ResolvedProject | null;
   projectName?: string;
   clientName?: string;
@@ -107,6 +111,8 @@ async function closeEntry(
     where: { id: entryId },
     data: { endedAt: at, status: 'FINISHED', durationSec, closeReason },
   });
+  // Los acumulados de la tarea se recalculan SIEMPRE desde sus tramos.
+  if (entry.taskId) await recalcTaskTotals(entry.taskId);
 }
 
 /** Enriquecimiento GitHub en segundo plano (no bloquea la respuesta al usuario). */
@@ -162,14 +168,33 @@ export async function startTimer(options: StartOptions): Promise<TimerResult> {
     }
   }
 
+  // La tarea es la entidad de trabajo; el registro es un tramo de esa tarea.
+  // Si el usuario ya eligio una tarea, se reutiliza; si no, se busca por titulo
+  // en el mismo proyecto y, si no existe, se crea.
+  const tituloTarea = options.title?.trim() || cleanTitle(titleText) || 'Tarea sin titulo';
+  const tareaExistente = options.taskId
+    ? await prisma.task.findUnique({
+        where: { id: options.taskId },
+        select: { id: true, title: true, projectId: true, clientId: true, taskTypeId: true },
+      })
+    : await findOrCreateTask({
+        userId,
+        title: tituloTarea,
+        projectId: project?.id ?? null,
+        clientId: project?.clientId ?? null,
+        taskTypeId: taskType?.id ?? null,
+        description: options.description ?? null,
+      });
+
   const entry = await prisma.timeEntry.create({
     data: {
       userId,
-      projectId: project?.id ?? null,
-      clientId: project?.clientId ?? null,
-      taskTypeId: taskType?.id ?? null,
+      taskId: tareaExistente?.id ?? null,
+      projectId: project?.id ?? tareaExistente?.projectId ?? null,
+      clientId: project?.clientId ?? tareaExistente?.clientId ?? null,
+      taskTypeId: taskType?.id ?? tareaExistente?.taskTypeId ?? null,
       // Si el NLU no aporta un titulo, se limpia la frase original para el historial.
-      title: options.title?.trim() || cleanTitle(titleText) || 'Tarea sin titulo',
+      title: tareaExistente?.title ?? tituloTarea,
       description: options.description ?? null,
       status: 'RUNNING',
       source: options.source ?? 'TELEGRAM_TEXT',
@@ -179,6 +204,13 @@ export async function startTimer(options: StartOptions): Promise<TimerResult> {
     },
     include: entryInclude,
   });
+
+  // Al empezar a trabajar, la tarea pasa a EN CURSO; luego se recalculan los
+  // acumulados desde sus tramos.
+  if (entry.taskId) {
+    await markTaskStatus(entry.taskId, 'IN_PROGRESS');
+    await recalcTaskTotals(entry.taskId);
+  }
 
   return {
     ok: true,
@@ -203,6 +235,7 @@ export async function pauseTimer(userId: string, reason?: string, source = 'TELE
     data: { status: 'PAUSED', durationSec },
     include: entryInclude,
   });
+  if (updated.taskId) await recalcTaskTotals(updated.taskId);
   void source;
   return { ok: true, action: 'pause', entry: updated };
 }
@@ -225,6 +258,7 @@ export async function resumeTimer(userId: string, source = 'TELEGRAM_TEXT'): Pro
     data: { status: 'RUNNING', startedAt: now },
     include: entryInclude,
   });
+  if (updated.taskId) await recalcTaskTotals(updated.taskId);
   void source;
   return { ok: true, action: 'resume', entry: updated };
 }
@@ -270,6 +304,8 @@ export async function stopTimer(options: StopOptions): Promise<TimerResult> {
     include: entryInclude,
   });
 
+  if (updated.taskId) await recalcTaskTotals(updated.taskId);
+
   if (options.enrichGithub !== false) {
     await resolveGithubRepos({ userId, projectId: updated.projectId, from: updated.startedAt, to: now })
       .then(async (data) => {
@@ -300,6 +336,7 @@ export async function cancelActive(userId: string): Promise<TimerResult> {
     where: { id: entry.id },
     data: { status: 'CANCELLED', endedAt: now, durationSec: accumulate(entry, now), closeReason: 'MANUAL_WEB' },
   });
+  if (entry.taskId) await recalcTaskTotals(entry.taskId);
   return { ok: true, action: 'stop', entry };
 }
 

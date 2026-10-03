@@ -134,13 +134,14 @@ export async function taskTimeReport(
       userId: user.id,
       status: { not: 'CANCELLED' },
       OR: [
+        { task: { title: { contains: term } } },
         { title: { contains: term } },
         { description: { contains: term } },
         { project: { name: { contains: term } } },
         { client: { name: { contains: term } } },
       ],
     },
-    include: { project: true, client: true, taskType: true },
+    include: { task: { select: { id: true, title: true, status: true } }, project: true, client: true, taskType: true },
     orderBy: { startedAt: 'desc' },
     take: 100,
   });
@@ -153,10 +154,20 @@ export async function taskTimeReport(
   }
 
   const totalSeconds = entries.reduce((acc, e) => acc + liveSeconds(e), 0);
+
+  // Se agrupa por TAREA cuando el registro la tiene: es la unidad de trabajo y
+  // puede acumular varios tramos. Si no, se cae al proyecto.
+  const byTask = new Map<string, { seconds: number; tramos: number }>();
   const byProject = new Map<string, number>();
   for (const entry of entries) {
+    const segundos = liveSeconds(entry);
+    const claveTarea = entry.task?.title;
+    if (claveTarea) {
+      const actual = byTask.get(claveTarea) ?? { seconds: 0, tramos: 0 };
+      byTask.set(claveTarea, { seconds: actual.seconds + segundos, tramos: actual.tramos + 1 });
+    }
     const key = entry.project?.name ?? entry.client?.name ?? 'Sin proyecto';
-    byProject.set(key, (byProject.get(key) ?? 0) + liveSeconds(entry));
+    byProject.set(key, (byProject.get(key) ?? 0) + segundos);
   }
 
   const lineas = [
@@ -164,6 +175,14 @@ export async function taskTimeReport(
     '',
     `Total: <b>${humanDuration(totalSeconds)}</b> en ${entries.length} registro(s)`,
   ];
+
+  if (byTask.size) {
+    lineas.push('', '<b>Por tarea</b>');
+    for (const [titulo, datos] of [...byTask.entries()].sort((a, b) => b[1].seconds - a[1].seconds).slice(0, 6)) {
+      const tramos = datos.tramos === 1 ? '1 tramo' : `${datos.tramos} tramos`;
+      lineas.push(`• ${escapeHtml(titulo)}: ${humanDuration(datos.seconds)} (${tramos})`);
+    }
+  }
 
   if (byProject.size > 1) {
     lineas.push('', '<b>Por proyecto</b>');

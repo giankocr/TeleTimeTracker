@@ -6,6 +6,7 @@ import { liveSeconds, pauseSeconds } from './timer.service';
 export type EntryForApi = TimeEntry & {
   pauses?: Pause[];
   tags?: EntryTag[];
+  task?: { id: string; title: string; status: string } | null;
   user?: { fullName: string } | null;
   project?: ({ id: string; name: string; client?: { name: string } | null }) | null;
   client?: { name: string } | null;
@@ -22,6 +23,9 @@ export function serializeEntry(entry: EntryForApi): ApiTimeEntry & { liveSeconds
     id: entry.id,
     userId: entry.userId,
     userName: entry.user?.fullName,
+    taskId: entry.taskId ?? null,
+    taskTitle: entry.task?.title ?? null,
+    taskStatus: entry.task?.status ?? null,
     clientId: entry.clientId,
     clientName: entry.client?.name ?? entry.project?.client?.name ?? null,
     projectId: entry.projectId,

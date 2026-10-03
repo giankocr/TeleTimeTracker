@@ -6,6 +6,7 @@ import LoginPage from './pages/Login';
 import TelegramCallbackPage from './pages/TelegramCallback';
 import DashboardPage from './pages/Dashboard';
 import EntriesPage from './pages/Entries';
+import TasksPage from './pages/Tasks';
 import ReportsPage from './pages/Reports';
 import PendingPage from './pages/Pending';
 import { ClientsPage, ProjectsPage } from './pages/Catalog';
@@ -62,6 +63,14 @@ function AppRoutes() {
               <Routes>
                 <Route path="/" element={<DashboardPage />} />
                 <Route path="/registros" element={<EntriesPage />} />
+                <Route
+                  path="/tareas"
+                  element={
+                    <RequirePermission permission="entries:read:own">
+                      <TasksPage />
+                    </RequirePermission>
+                  }
+                />
                 <Route path="/reportes" element={<ReportsPage />} />
                 <Route path="/pendientes" element={<PendingPage />} />
                 <Route

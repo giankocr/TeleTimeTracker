@@ -20,6 +20,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: 'terminar', description: '⏹ Terminar la tarea y guardar el tiempo' },
   { command: 'pausar', description: '⏸ Pausar la tarea actual' },
   { command: 'retomar', description: '▶️ Retomar la tarea pausada' },
+  { command: 'tareas', description: '📋 Tus tareas (acumulado de tiempo por tarea)' },
   { command: 'tiempo', description: '⏱ Tiempo consumido en una tarea o proyecto' },
   { command: 'reporte', description: '📈 Reporte de horas (hoy, ayer, semana, mes)' },
   { command: 'menu', description: '📋 Menú con todos los comandos y botones' },

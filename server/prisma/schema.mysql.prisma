@@ -88,6 +88,8 @@ model User {
   updatedAt       DateTime  @updatedAt
 
   timeEntries     TimeEntry[]
+  tasksAssigned   Task[]          @relation("TaskAssignee")
+  tasksCreated    Task[]          @relation("TaskCreatedBy")
   pendingTasks    PendingTask[]
   sessions        AuthSession[]
   projectMembers  ProjectMember[]
@@ -116,6 +118,7 @@ model Client {
   projects ClientProject[]
   members  ClientMember[]
   entries  TimeEntry[]
+  tasks    Task[]
 
   @@map("clients")
 }
@@ -152,6 +155,7 @@ model ClientProject {
 
   members  ProjectMember[]
   entries  TimeEntry[]
+  tasks    Task[]
 
   @@unique([clientId, name])
   @@index([clientId])
@@ -182,8 +186,59 @@ model TaskType {
   createdAt DateTime @default(now())
 
   entries TimeEntry[]
+  tasks   Task[]
 
   @@map("task_types")
+}
+
+// ---------------------------------------------------------------------------
+//  TAREA: la unidad de trabajo. NO es lo mismo que un registro de tiempo.
+//
+//  Una tarea (arreglar el login, maquetar el checkout) puede tener VARIOS
+//  registros de tiempo: cada vez que se empieza, se pausa para otra cosa y se
+//  retoma se crea un tramo nuevo. Asi el tiempo total de la tarea es la suma de
+//  sus tramos, y el registro de tiempo sigue siendo el hecho puntual.
+//
+//  Jerarquia: Cliente -> Proyecto -> Tarea -> Registro de tiempo
+//  ---------------------------------------------------------------------------
+model Task {
+  id          String         @id @default(cuid()) @db.VarChar(32)
+  title       String @db.VarChar(200)
+  description String? @db.Text
+  // OPEN | IN_PROGRESS | DONE | CANCELLED
+  status      String         @default("OPEN") @db.VarChar(16)
+  projectId   String?
+  project     ClientProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  clientId    String?
+  client      Client?        @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  taskTypeId  String?
+  taskType    TaskType?      @relation(fields: [taskTypeId], references: [id], onDelete: SetNull)
+  // Responsable principal (las tareas pueden ser de alguien concreto)
+  assigneeId  String?
+  assignee    User?          @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdById String?
+  createdBy   User?          @relation("TaskCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  estimatedHours Float?
+  priority       String  @default("NORMAL") // LOW | NORMAL | HIGH @db.VarChar(10)
+  dueDate        DateTime?
+
+  // --- Acumulados, mantenidos por el motor de tiempo ---
+  totalSeconds Int       @default(0)
+  entryCount   Int       @default(0)
+  firstWorkedAt DateTime?
+  lastWorkedAt  DateTime?
+  completedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  timeEntries TimeEntry[]
+
+  @@index([projectId, status])
+  @@index([assigneeId, status])
+  @@index([status])
+  @@map("tasks")
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +250,9 @@ model TimeEntry {
   id        String        @id @default(cuid()) @db.VarChar(32)
   userId    String
   user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Tarea a la que pertenece este tramo. Una tarea agrupa VARIOS registros.
+  taskId    String?
+  task      Task?         @relation(fields: [taskId], references: [id], onDelete: SetNull)
   projectId String?
   project   ClientProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   clientId  String?
@@ -234,6 +292,7 @@ model TimeEntry {
   @@index([userId, status])
   @@index([userId, startedAt])
   @@index([projectId, startedAt])
+  @@index([taskId])
   @@index([startedAt])
   @@map("time_entries")
 }

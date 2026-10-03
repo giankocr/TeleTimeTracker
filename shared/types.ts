@@ -141,6 +141,10 @@ export interface ApiTimeEntry {
   id: string;
   userId: string;
   userName?: string;
+  /** Tarea a la que pertenece este tramo (una tarea agrupa varios registros). */
+  taskId?: string | null;
+  taskTitle?: string | null;
+  taskStatus?: string | null;
   clientId: string | null;
   clientName?: string | null;
   projectId: string | null;
