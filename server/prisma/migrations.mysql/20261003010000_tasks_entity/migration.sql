@@ -73,9 +73,21 @@ SELECT
          THEN NULL ELSE MAX(COALESCE(`endedAt`, `startedAt`)) END,
     MIN(`createdAt`),
     MAX(`updatedAt`)
-FROM `time_entries`
+FROM `time_entries` e
 WHERE NOT EXISTS (
-    SELECT 1 FROM `tasks` t WHERE t.`id` = CONCAT('tarea_', `time_entries`.`id`)
+    -- Guard POR GRUPO (no por fila): solo se crea la tarea del grupo si esa
+    -- tarea no existe ya. Antes se comparaba con el id de cada registro, y como
+    -- el WHERE se evalua antes de insertar, reejecutar la migracion duplicaba
+    -- las tareas. Ver 20261003020000_dedupe_backfill_tasks.
+    SELECT 1 FROM `tasks` t
+    WHERE t.`id` = CONCAT('tarea_', (
+        SELECT MIN(e2.`id`) FROM `time_entries` e2
+        WHERE COALESCE(e2.`title`, '') = COALESCE(e.`title`, '')
+          AND COALESCE(e2.`projectId`, '') = COALESCE(e.`projectId`, '')
+          AND COALESCE(e2.`clientId`, '') = COALESCE(e.`clientId`, '')
+          AND COALESCE(e2.`taskTypeId`, '') = COALESCE(e.`taskTypeId`, '')
+          AND e2.`userId` = e.`userId`
+    ))
 )
 GROUP BY
     COALESCE(`title`, ''), `projectId`, `clientId`, `taskTypeId`, `userId`;

@@ -665,7 +665,52 @@ docker push giankocr/teletimetracker:latest
 
 > **Recomendación para el primer despliegue:** pon `TELEGRAM_MODE=polling`. No necesita dominio, ni webhook, ni `PUBLIC_URL`: el bot pregunta a Telegram directamente. Cuando el panel esté estable, cambia a `webhook` si lo prefieres.
 
-#### 6) Comprobaciones de una línea
+#### 6) `P2021` / `P2022`: falta la tabla `tasks` o la columna `time_entries.taskId`
+
+Síntoma: la API devuelve **500** en clientes, proyectos, registros y tareas, y en el log aparece:
+
+```
+P2022  The column `teletimetracker_db.time_entries.taskId` does not exist
+P2021  The table `teletimetracker_db.tasks` does not exist
+```
+
+**Qué pasó.** Una versión anterior del arranque *adoptaba* las migraciones: si la base ya tenía tablas,
+registraba **todas** las migraciones como aplicadas **sin ejecutarlas**. En una base creada antes de
+que existiera la entidad *Tarea*, la migración de `tasks` quedaba marcada como aplicada con
+**0 sentencias** y nunca se ejecutaba.
+
+**Cómo se arregla solo (desde esta versión).** El arranque ya no adopta nada:
+
+1. comprueba el esquema real (`/api/health` → `schema.ready`, `schema.missing`);
+2. una migración registrada con `statements = 0` se considera **no verificada** y se **reejecuta**;
+3. las sentencias se aplican de forma **idempotente** (si la tabla, columna o índice ya existe, se salta);
+4. el backfill agrupa los registros antiguos en tareas (`tarea_<id del registro más antiguo>`) y los enlaza;
+5. una migración de limpieza borra las tareas duplicadas que dejó el backfill antiguo.
+
+Solo hay que **redeployar**: no hay que tocar la base de datos ni perder datos.
+
+**Cómo comprobarlo:**
+
+```bash
+curl -s https://TU-DOMINIO/api/health
+#   → "schema":{"ready":true,"missing":[]}
+#   → "migrations":[{"name":"..._init_mysql","statements":35},
+#                   {"name":"..._tasks_entity","statements":11},
+#                   {"name":"..._dedupe_backfill_tasks","statements":5}]
+```
+
+Si sigue en `ready:false`, mira `lastMigrationError` y el log del contenedor: ahí aparece la sentencia
+SQL exacta que falló y el motivo.
+
+> **Respaldo antes de migrar** (recomendado cuando ya hay datos):
+> ```bash
+> # MySQL
+> mysqldump -h HOST -u USUARIO -p BASE > respaldo-$(date +%F).sql
+> # SQLite (volumen /app/data)
+> cp /app/data/teletimetracker.db /app/data/respaldo-$(date +%F).db
+> ```
+
+#### 7) Comprobaciones de una línea
 
 ```bash
 # ¿El contenedor está vivo y puede escribir su volumen?
@@ -680,7 +725,7 @@ curl -s https://TU-DOMINIO/api/health
 curl -s -H "Authorization: Bearer TOKEN" https://TU-DOMINIO/api/diagnostics
 ```
 
-#### 7) Volver a empezar de cero
+#### 8) Volver a empezar de cero
 
 Si algo quedó a medias, borra el volumen y redeploya: el arranque recrea el esquema y el usuario administrador automáticamente (perderás los datos, es un entorno nuevo).
 

@@ -252,9 +252,19 @@ async function migrateWithRunner(profile: DbProfile): Promise<void> {
         const rows = (await db.$queryRawUnsafe('SELECT `name` FROM `_app_migrations`')) as Array<{ name: string }>;
         return new Set(rows.map((row) => row.name));
       },
+      // Registradas con 0 sentencias = adoptadas sin ejecutar (o fallidas).
+      unverified: new Set(
+        (
+          (await db.$queryRawUnsafe(
+            'SELECT `name` FROM `_app_migrations` WHERE `statements` = 0',
+          )) as Array<{ name: string }>
+        ).map((r) => r.name),
+      ),
       markApplied: async (name, statements) => {
+        // Se actualiza si ya existia: una migracion adoptada pasa a reflejar las
+        // sentencias realmente aplicadas.
         await db.$executeRawUnsafe(
-          'INSERT INTO `_app_migrations` (`name`, `statements`) VALUES (?, ?)',
+          'INSERT INTO `_app_migrations` (`name`, `statements`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `statements` = VALUES(`statements`)',
           name,
           statements,
         );

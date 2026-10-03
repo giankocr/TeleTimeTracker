@@ -79,9 +79,19 @@ SELECT
          THEN NULL ELSE MAX(COALESCE("endedAt", "startedAt")) END,
     MIN("createdAt"),
     MAX("updatedAt")
-FROM "time_entries"
+FROM "time_entries" e
 WHERE NOT EXISTS (
-    SELECT 1 FROM "tasks" t WHERE t."id" = 'tarea_' || "time_entries"."id"
+    -- Guard POR GRUPO (no por fila): solo se crea la tarea del grupo si no
+    -- existe ya. Ver 20261003020000_dedupe_backfill_tasks.
+    SELECT 1 FROM "tasks" t
+    WHERE t."id" = 'tarea_' || (
+        SELECT MIN(e2."id") FROM "time_entries" e2
+        WHERE COALESCE(e2."title", '') = COALESCE(e."title", '')
+          AND COALESCE(e2."projectId", '') = COALESCE(e."projectId", '')
+          AND COALESCE(e2."clientId", '') = COALESCE(e."clientId", '')
+          AND COALESCE(e2."taskTypeId", '') = COALESCE(e."taskTypeId", '')
+          AND e2."userId" = e."userId"
+    )
 )
 GROUP BY
     COALESCE("title", ''), "projectId", "clientId", "taskTypeId", "userId";

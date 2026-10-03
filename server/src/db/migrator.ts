@@ -30,6 +30,8 @@ interface RunnerOptions {
   execute: (sql: string) => Promise<void>;
   /** Devuelve las claves unicas ya aplicadas. */
   applied: () => Promise<Set<string>>;
+  /** Migraciones registradas pero sin sentencias aplicadas (adoptadas). */
+  unverified?: Set<string>;
   /** Registra una migracion como aplicada. */
   markApplied: (name: string, statements: number) => Promise<void>;
   log?: (message: string) => void;
@@ -88,9 +90,17 @@ export async function runMigrations(options: RunnerOptions): Promise<MigrateResu
   const result: MigrateResult = { applied: [], skipped: [] };
 
   for (const migration of migrations) {
-    if (done.has(migration.name)) {
+    // Una migracion registrada con 0 sentencias significa que fue ADOPTADA por
+    // una version anterior (se marco como aplicada sin ejecutarla) o que su
+    // contenido no se pudo aplicar. En ambos casos hay que intentarla de nuevo:
+    // el aplicador es idempotente, asi que si ya estaba hecha no pasa nada.
+    const adoptadaSinEjecutar = options.unverified?.has(migration.name) ?? false;
+    if (done.has(migration.name) && !adoptadaSinEjecutar) {
       result.skipped.push(migration.name);
       continue;
+    }
+    if (adoptadaSinEjecutar) {
+      log(`[migrate] ${migration.name} figuraba aplicada sin ejecutarse: se verifica`);
     }
     const sql = fs.readFileSync(migration.file, 'utf8');
     const statements = splitStatements(sql);
