@@ -48,6 +48,42 @@ function logStartupContext(): void {
   console.log('─'.repeat(64));
 }
 
+/**
+ * Registra el webhook y VERIFICA que Telegram pueda entregar.
+ *
+ * Motivo: en el primer despliegue el certificado TLS puede emitirse unos
+ * minutos DESPUES de que el contenedor arranque. Si solo se registra una vez,
+ * Telegram responde "certificate verify failed" y el bot queda mudo sin que
+ * nadie se entere. Aqui se reintenta y se registra el estado real.
+ */
+async function registerWebhookWithRetry(url: string, attempt = 1): Promise<void> {
+  const MAX_ATTEMPTS = 5;
+  try {
+    await setWebhook(url, env.TELEGRAM_WEBHOOK_SECRET || undefined);
+    const info = await getWebhookInfo();
+    if (info.last_error_message) {
+      throw new Error(info.last_error_message);
+    }
+    console.log(`🔗 Webhook activo y verificado: ${url}`);
+  } catch (err) {
+    const message = (err as Error).message;
+    console.warn(`⚠  Webhook no verificado (intento ${attempt}/${MAX_ATTEMPTS}): ${message}`);
+    if (/certificate|SSL/i.test(message)) {
+      console.warn('   Causa tipica: el certificado TLS del dominio aun no estaba emitido.');
+      console.warn('   Revisa en EasyPanel que el dominio tenga HTTPS activo y el certificado emitido.');
+    }
+    if (attempt < MAX_ATTEMPTS) {
+      const delayMs = 2 * 60 * 1000; // 2 minutos
+      console.warn(`   Se reintentara en ${delayMs / 60000} minutos...`);
+      const timer = setTimeout(() => void registerWebhookWithRetry(url, attempt + 1), delayMs);
+      timer.unref?.();
+    } else {
+      console.error('   ❌ El bot no recibira mensajes por webhook.');
+      console.error('   Alternativa inmediata: TELEGRAM_MODE=polling (no necesita dominio ni certificado).');
+    }
+  }
+}
+
 async function main(): Promise<void> {
   logStartupContext();
 
@@ -105,10 +141,7 @@ async function main(): Promise<void> {
 
       if (env.TELEGRAM_MODE === 'webhook') {
         if (env.PUBLIC_URL) {
-          await setWebhook(`${env.PUBLIC_URL}/api/telegram/webhook`, env.TELEGRAM_WEBHOOK_SECRET || undefined);
-          const info = await getWebhookInfo();
-          console.log(`🔗 Webhook: ${env.PUBLIC_URL}/api/telegram/webhook`);
-          if (info.last_error_message) console.warn(`   ⚠ Telegram reporta: ${info.last_error_message}`);
+          await registerWebhookWithRetry(`${env.PUBLIC_URL}/api/telegram/webhook`);
         } else {
           console.warn('⚠  TELEGRAM_MODE=webhook pero falta PUBLIC_URL.');
           console.warn('   → Opcion A: define PUBLIC_URL con tu dominio de EasyPanel (sin barra final).');

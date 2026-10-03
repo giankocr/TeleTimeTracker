@@ -193,7 +193,19 @@ export const setWebhook = (url: string, secretToken?: string) =>
     drop_pending_updates: false,
   });
 
-export const getWebhookInfo = () => call<Record<string, unknown>>('getWebhookInfo');
+/** Respuesta de getWebhookInfo (solo los campos que usamos). */
+export interface WebhookInfo {
+  url: string;
+  has_custom_certificate?: boolean;
+  pending_update_count?: number;
+  ip_address?: string;
+  last_error_date?: number;
+  last_error_message?: string;
+  max_connections?: number;
+  allowed_updates?: string[];
+}
+
+export const getWebhookInfo = () => call<WebhookInfo>('getWebhookInfo');
 
 export const getUpdates = (offset?: number, timeoutSec = 30) =>
   call<TgUpdate[]>('getUpdates', { offset, timeout: timeoutSec, allowed_updates: ['message', 'callback_query'] }, (timeoutSec + 15) * 1000);

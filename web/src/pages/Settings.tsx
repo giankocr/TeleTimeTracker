@@ -231,7 +231,16 @@ export default function SettingsPage() {
               <div className="stack-sm" style={{ marginTop: 6 }}>
                 <span className="tiny muted-2">Webhook actual: <span className="mono">{integration.webhook.url}</span></span>
                 {integration.webhook.last_error_message ? (
-                  <Alert kind="warning">Último error de Telegram: {integration.webhook.last_error_message}</Alert>
+                  <Alert kind="warning">
+                    <b>Telegram no puede entregar los mensajes:</b> {integration.webhook.last_error_message}
+                    {/certificate|SSL/i.test(integration.webhook.last_error_message) ? (
+                      <div style={{ marginTop: 6 }}>
+                        Suele ser el certificado TLS del dominio: comprueba que el dominio tenga HTTPS activo y el
+                        certificado emitido en EasyPanel, y vuelve a pulsar <b>Registrar webhook</b>. Mientras tanto
+                        puedes usar <span className="mono">TELEGRAM_MODE=polling</span>, que no necesita dominio.
+                      </div>
+                    ) : null}
+                  </Alert>
                 ) : (
                   <span className="tiny muted-2">
                     Pendientes: {integration.webhook.pending_update_count ?? 0}
