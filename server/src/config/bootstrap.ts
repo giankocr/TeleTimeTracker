@@ -41,7 +41,13 @@ function runPrisma(args: string[]): { ok: boolean; output: string } {
 }
 
 export async function bootstrapDatabase(): Promise<void> {
-  if (!fs.existsSync(env.DATA_DIR)) fs.mkdirSync(env.DATA_DIR, { recursive: true });
+  // Nunca lanzar por el directorio: el arranque ya lo reporto y seguimos.
+  try {
+    if (!fs.existsSync(env.DATA_DIR)) fs.mkdirSync(env.DATA_DIR, { recursive: true });
+  } catch (err) {
+    console.error('[bootstrap] directorio de datos no disponible:', (err as Error).message);
+    return;
+  }
 
   if (env.AUTO_MIGRATE) {
     console.log('[bootstrap] aplicando migraciones (prisma migrate deploy)...');

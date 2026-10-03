@@ -19,9 +19,36 @@ const list = (v: string | undefined, def: string[] = []): string[] =>
     .filter(Boolean)
     .concat(v ? [] : def);
 
-/** Directorio de datos persistente (volumen Docker: /app/data). */
-export const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'));
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+/**
+ * Directorio de datos persistente (volumen Docker: /app/data).
+ *
+ * El mkdir NUNCA debe tumbar el proceso: si el volumen no esta montado o no es
+ * escribible queremos que el servidor arranque y lo diga por el log, no un
+ * stack trace de una linea que oculta el problema real.
+ */
+const configuredDataDir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+export const DATA_DIR = path.resolve(configuredDataDir);
+
+export const dataDirStatus: { writable: boolean; error: string | null; configured: string } = {
+  writable: false,
+  error: null,
+  configured: configuredDataDir,
+};
+
+try {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  // Comprobacion real de escritura (un volumen puede existir y ser de solo lectura).
+  fs.accessSync(DATA_DIR, fs.constants.W_OK);
+  dataDirStatus.writable = true;
+} catch (err) {
+  dataDirStatus.error = (err as NodeJS.ErrnoException).code ?? (err as Error).message;
+  console.error('─'.repeat(64));
+  console.error('❌ El directorio de datos no es escribible:', DATA_DIR);
+  console.error(`   Causa: ${dataDirStatus.error}`);
+  console.error('   En EasyPanel: monta un volumen persistente con Mount Path = /app/data');
+  console.error('   y define DATA_DIR=/app/data. El panel intentara arrancar en modo degradado.');
+  console.error('─'.repeat(64));
+}
 
 /** Ruta del archivo SQLite dentro del volumen. */
 export const SQLITE_FILE = path.join(DATA_DIR, 'teletimetracker.db');

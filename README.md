@@ -303,7 +303,8 @@ Mínimo imprescindible:
 
 ```env
 NODE_ENV=production
-DATA_DIR=/app/data
+DATA_DIR=/app/data          # ← imprescindible: debe coincidir con el Mount Path del volumen
+TELEGRAM_MODE=polling       # ← recomendado en el primer despliegue (no necesita dominio)
 JWT_SECRET=<openssl rand -hex 32>
 SETTINGS_ENC_KEY=<openssl rand -hex 32>
 
@@ -347,7 +348,78 @@ DEFAULT_TIMEZONE=America/Bogota
 4. Cada trabajador vincula su Telegram y ya puede enviar notas de voz.
 5. Para habilitar el **acceso con Telegram y con Teléfono + código**: guarda el token del bot en Configuración y pide a cada persona que comparta su número con el bot (ver la sección de acceso al panel). Registra también su teléfono en *Usuarios* si quieres que puedan entrar con código.
 
-### 5.7 Actualizaciones y respaldos
+### 5.7 Si no levanta: diagnóstico paso a paso
+
+El contenedor ya no muere en silencio: **abre el puerto primero** y registra el motivo. Mira los **Logs** del servicio en EasyPanel y localiza la línea que empieza por `❌`, `⚠` o `ℹ`. Estas son las causas por orden de frecuencia:
+
+#### 1) El volumen no está montado o no es escribible  ← la más común
+
+En los logs verás:
+
+```
+❌ El directorio de datos no es escribible: /app/data
+   Causa: EPERM
+```
+
+**Solución exacta en EasyPanel** → pestaña **Mounts** del servicio:
+
+| Campo | Valor |
+|---|---|
+| Type | `Volume` |
+| Name | `teletimetracker-data` |
+| **Mount Path** | **`/app/data`** ← exacto, sin barra final |
+
+Y en **Environment** debe existir `DATA_DIR=/app/data`. Si el volumen no está montado, la base de datos se crea dentro de la capa efímera y cualquier redeploy borra los datos. Tras montarlo, **haz Redeploy** (no solo Restart) para recrear el contenedor con el montaje.
+
+#### 2) Falta `JWT_SECRET` o es demasiado corto
+
+En los logs: `JWT_SECRET : ⚠ corto o por defecto`. El sistema arranca, pero los tokens son falsificables. Genera uno con `openssl rand -hex 32` y añádelo. Lo mismo para `SETTINGS_ENC_KEY` (cifra los tokens guardados en la BD): si la cambias después, los secretos guardados dejan de descifrarse y hay que volver a pegarlos.
+
+#### 3) El healthcheck mata el contenedor
+
+Si EasyPanel tiene configurado un **Healthcheck Path**, borra el campo (o pon `/health`) y deja el del Dockerfile, que ya viene con `start-period` de 40 s. Este proyecto aplica **migraciones y seed en el primer arranque**, y en planes pequeños eso puede tardar 20-40 s.
+
+#### 4) El build falla por memoria o tiempo
+
+El paso 2 de la imagen compila el panel con Vite y necesita ~1 GB de RAM. Si el log del **build** se corta sin error claro, sube la memoria del builder o compila la imagen en tu máquina y súbela a un registro:
+
+```bash
+docker build -t giankocr/teletimetracker:latest .
+docker push giankocr/teletimetracker:latest
+# En EasyPanel: Source = Docker Image, y usa esa imagen
+```
+
+#### 5) El bot no recibe mensajes (el panel sí funciona)
+
+| Qué ves | Causa | Solución |
+|---|---|---|
+| `⚠ TELEGRAM_MODE=webhook pero falta PUBLIC_URL` | No definiste la URL pública | Define `PUBLIC_URL=https://tu-dominio.com` (sin barra final) o pon `TELEGRAM_MODE=polling` |
+| `ℹ Bot deshabilitado (sin token…)` | Falta el token | *Configuración → TELEGRAM_BOT_TOKEN → Guardar* (no hace falta rebuild) |
+| `⚠ No se pudo inicializar el bot: Not Found` | El token es inválido o está mal copiado | Pulsa **Probar token** en *Configuración* y vuelve a pegarlo |
+| Webhook registrado pero sin respuesta | El dominio cambió o no es HTTPS | Vuelve a pulsar **Registrar webhook**, o usa `TELEGRAM_MODE=polling` |
+
+> **Recomendación para el primer despliegue:** pon `TELEGRAM_MODE=polling`. No necesita dominio, ni webhook, ni `PUBLIC_URL`: el bot pregunta a Telegram directamente. Cuando el panel esté estable, cambia a `webhook` si lo prefieres.
+
+#### 6) Comprobaciones de una línea
+
+```bash
+# ¿El contenedor está vivo y puede escribir su volumen?
+curl -s https://TU-DOMINIO/health
+#   → {"status":"ok",...,"dataDir":{"writable":true}}
+
+# ¿La base de datos responde?
+curl -s https://TU-DOMINIO/api/health
+#   → {"status":"ok","db":"up"}
+
+# Diagnóstico completo (requiere iniciar sesión como admin)
+curl -s -H "Authorization: Bearer TOKEN" https://TU-DOMINIO/api/diagnostics
+```
+
+#### 7) Volver a empezar de cero
+
+Si algo quedó a medias, borra el volumen y redeploya: el arranque recrea el esquema y el usuario administrador automáticamente (perderás los datos, es un entorno nuevo).
+
+### 5.8 Actualizaciones y respaldos
 
 ```bash
 # Actualizar: haz push y en EasyPanel pulsa Deploy (el volumen se conserva).

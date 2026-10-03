@@ -6,7 +6,7 @@ import jwt from '@fastify/jwt';
 import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
-import { env } from './config/env';
+import { env, dataDirStatus } from './config/env';
 import { prisma } from './db/prisma';
 
 import authRoutes from './routes/auth.routes';
@@ -47,7 +47,14 @@ export async function buildApp(): Promise<FastifyInstance> {
   // ---------------------------------------------------------------------
   // Health / readiness
   // ---------------------------------------------------------------------
-  app.get('/health', async () => ({ status: 'ok', uptime: Math.round(process.uptime()), version: '1.0.0' }));
+  // Healthcheck del contenedor: responde 200 mientras el proceso viva (asi la
+  // plataforma no reinicia en bucle mientras se migra). El detalle va aparte.
+  app.get('/health', async () => ({
+    status: 'ok',
+    uptime: Math.round(process.uptime()),
+    version: '1.0.0',
+    dataDir: { path: env.DATA_DIR, writable: dataDirStatus.writable, error: dataDirStatus.error },
+  }));
 
   app.get('/api/health', async (_request, reply) => {
     try {
