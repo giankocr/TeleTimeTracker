@@ -13,20 +13,23 @@ interface NavItem {
 
 const NAV: Array<{ section: string; items: NavItem[] }> = [
   {
-    section: 'Operación',
+    section: 'Resumen',
     items: [
       { to: '/', label: 'Dashboard', icon: '📊' },
-      { to: '/tareas', label: 'Tareas', icon: '🗂', permission: 'entries:read:own' },
-      { to: '/registros', label: 'Registros', icon: '⏱', permission: 'entries:read:own' },
       { to: '/reportes', label: 'Reportes', icon: '📈', permission: 'reports:own' },
       { to: '/pendientes', label: 'Mis pendientes', icon: '📝' },
     ],
   },
   {
-    section: 'Catálogo',
+    // Clientes -> Proyectos -> Tareas -> Registros de tiempo: la misma jerarquia
+    // con la que trabaja el bot. Se agrupan juntos porque son las mismas
+    // entidades vistas de arriba abajo (que y para quien se trabaja).
+    section: 'Gestión de trabajo',
     items: [
       { to: '/clientes', label: 'Clientes', icon: '🏢', permission: 'clients:read' },
       { to: '/proyectos', label: 'Proyectos', icon: '📁', permission: 'projects:read' },
+      { to: '/tareas', label: 'Tareas', icon: '🗂', permission: 'entries:read:own' },
+      { to: '/registros', label: 'Registros de tiempo', icon: '⏱', permission: 'entries:read:own' },
     ],
   },
   {
@@ -103,7 +106,11 @@ export default function Layout({ children }: { children: ReactNode }) {
 
   const title =
     NAV.flatMap((s) => s.items).find((i) => i.to === location.pathname)?.label ??
-    (location.pathname.startsWith('/registros') ? 'Registros' : 'Panel');
+    (location.pathname.startsWith('/registros')
+      ? 'Registros de tiempo'
+      : location.pathname.startsWith('/tareas')
+        ? 'Tareas'
+        : 'Panel');
 
   return (
     <div className="app-shell">

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api, downloadFile } from '../lib/api';
 import {
   API_SAFE,
@@ -29,8 +30,10 @@ export default function EntriesPage() {
   const [clientId, setClientId] = useState('');
   const [projectId, setProjectId] = useState('');
   const [userId, setUserId] = useState('');
-  const [taskId, setTaskId] = useState('');
   const [tasks, setTasks] = useState<any[]>([]);
+  // El filtro por tarea puede llegar por URL (enlace desde la página de Tareas).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [taskId, setTaskId] = useState(searchParams.get('taskId') ?? '');
 
   const [data, setData] = useState<any | null>(null);
   const [active, setActive] = useState<any | null>(null);
@@ -104,6 +107,15 @@ export default function EntriesPage() {
       setTasks(tk.tasks);
     })();
   }, []);
+
+  /** Mantiene el filtro de tarea en la URL para poder enlazar a esta vista. */
+  const changeTaskFilter = (value: string) => {
+    setTaskId(value);
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set('taskId', value);
+    else next.delete('taskId');
+    setSearchParams(next, { replace: true });
+  };
 
   const timerAction = async (action: 'pause' | 'resume' | 'stop' | 'cancel') => {
     try {
@@ -331,7 +343,7 @@ export default function EntriesPage() {
                 </option>
               ))}
           </select>
-          <select className="select" style={{ width: 'auto' }} value={taskId} onChange={(e) => setTaskId(e.target.value)}>
+          <select className="select" style={{ width: 'auto' }} value={taskId} onChange={(e) => changeTaskFilter(e.target.value)}>
             <option value="">Todas las tareas</option>
             {tasks.map((t) => (
               <option key={t.id} value={t.id}>

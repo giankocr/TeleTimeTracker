@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatDateTime, formatHours, formatSeconds } from '../lib/format';
@@ -256,6 +257,9 @@ export default function TasksPage() {
                         <button className="btn btn-sm" onClick={() => void openDetail(t)} title="Ver sus registros de tiempo">
                           Ver tramos
                         </button>
+                        <Link className="btn btn-sm btn-ghost" to={`/registros?taskId=${t.id}`} title="Abrir sus registros en la vista de tiempo">
+                          ⏱
+                        </Link>
                         {canWrite && t.status !== 'DONE' ? (
                           <button className="btn btn-sm" onClick={() => void changeStatus(t, 'DONE')} title="Marcar como completada">
                             ✓
@@ -312,8 +316,15 @@ export default function TasksPage() {
           ) : null}
 
           <div className="card-title" style={{ marginBottom: 0 }}>
-            <h3>Registros de tiempo ({detail.entries.length})</h3>
-            <span className="card-hint">Cada fila es un tramo de trabajo de esta tarea</span>
+            <div>
+              <h3>Registros de tiempo ({detail.entries.length})</h3>
+              <span className="card-hint">
+                Cada fila es un tramo de trabajo de esta tarea. Se ven y editan también en «Registros de tiempo».
+              </span>
+            </div>
+            <Link className="btn btn-sm" to={`/registros?taskId=${detail.task.id}`}>
+              Abrir en Registros de tiempo →
+            </Link>
           </div>
 
           {detail.entries.length ? (
