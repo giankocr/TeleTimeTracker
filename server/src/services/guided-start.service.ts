@@ -1,6 +1,6 @@
 import { prisma } from '../db/prisma';
 import { clearFlow, findOrCreateClient, findOrCreateProject, getFlow, setFlow, startFlow, updateFlow } from './guided-flow.service';
-import { listVisibleProjects, normalize, resolveProject, type ResolvedProject } from './resolve.service';
+import { bestMatch, listVisibleProjects, normalize, resolveProject, type ResolvedProject } from './resolve.service';
 import { leaveKeyboard, type ReplyMarkup } from '../bot/telegram.api';
 import { startTimer } from './timer.service';
 import { findOrCreateTask } from './task.service';
@@ -330,11 +330,18 @@ export async function handleTaskTypeName(context: CatalogContext, name: string):
 const SELECT_LABEL = (t: string, sub?: string | null) => (sub ? `${t} · ${sub}` : t).slice(0, 60);
 
 /** Paso 1: elegir cliente (con opción de crear uno nuevo). */
-export async function askClientSelection(context: CatalogContext): Promise<GuidedReply> {
+export async function askClientSelection(
+  context: CatalogContext,
+  opts: { transcript?: string } = {},
+): Promise<GuidedReply> {
+  const transcript = (opts.transcript ?? '').trim();
   setFlow(context.userId, {
     step: 'SELECT_CLIENT',
     mode: 'SELECT_AND_RECORD',
-    originalText: '',
+    originalText: transcript,
+    // El audio ya esta transcrito: viaja en el flujo para no volver a pedirlo
+    // y para usarlo como descripcion del tramo al final.
+    ...(transcript ? { fromVoice: true, voiceTranscript: transcript } : {}),
     startAfterCreate: true,
   });
 
@@ -362,10 +369,12 @@ export async function askClientSelection(context: CatalogContext): Promise<Guide
   ]);
   filas.push([{ text: '➕ Cliente nuevo', callback_data: 'newclient:' }]);
 
+  const escuchado = transcript ? [`🎙 <i>${escapeHtml(transcript)}</i>`, ''] : [];
+
   return {
     text: [
       '▶️ <b>Registrar tiempo paso a paso</b>',
-      '',
+      ...escuchado,
       '<b>1/3 · ¿Para qué cliente?</b>',
       'Elige uno de la lista:',
     ].join('\n'),
@@ -505,21 +514,263 @@ export function askForAudioOrText(
 }
 
 /** El usuario pidió crear la tarea a mano en el paso 3. */
-export function askNewTaskTitle(context: CatalogContext, projectLabel: string): GuidedReply {
+export function askNewTaskTitle(
+  context: CatalogContext,
+  projectLabel: string,
+  opts: { suggestion?: string } = {},
+): GuidedReply {
   startFlow(context.userId, {
     step: 'ASK_PROJECT_NAME',
     mode: 'SELECT_AND_RECORD',
     selectedProjectLabel: projectLabel,
     startAfterCreate: true,
   });
+
+  const sugerencia = cleanTaskTitle(opts.suggestion ?? '');
+  const texto = [
+    `📁 Proyecto: <b>${escapeHtml(projectLabel)}</b>`,
+    '',
+    '✍️ Escribe o <b>dicta</b> el nombre de la nueva tarea:',
+  ];
+  if (sugerencia) {
+    texto.push('', `🎙 Lo que dictaste: <i>${escapeHtml(sugerencia)}</i>`);
+  } else {
+    texto.push('<i>Ejemplo: Maquetación del carrito</i>');
+  }
+
+  return {
+    text: texto.join('\n'),
+    markup: sugerencia
+      ? {
+          inline_keyboard: [
+            [{ text: `✅ Usar «${sugerencia.slice(0, 40)}»`, callback_data: 'vusetitle:' }],
+          ],
+        }
+      : leaveKeyboard(),
+  };
+}
+
+/**
+ * Titulo de tarea a partir de lo dictado: se limpia la coletilla de intencion.
+ * (Es la misma limpieza que aplica el bot a las notas de voz.)
+ */
+export function cleanTaskTitle(text: string): string {
+  const limpio = text
+    .replace(/^\s*(iniciando|inicio|empiezo|empezar|comienzo|arranco|trabajando en|nueva tarea)\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (limpio.length >= 3 ? limpio : text.trim()).slice(0, 180);
+}
+
+// ---------------------------------------------------------------------------
+// VOZ: el audio siempre es un registro de tiempo
+// ---------------------------------------------------------------------------
+
+export interface VoiceTaskMatch {
+  task: {
+    id: string;
+    title: string;
+    totalSeconds: number;
+    entryCount: number;
+    projectId: string | null;
+    projectLabel: string;
+    clientLabel?: string;
+  } | null;
+  score: number;
+  alternatives: Array<{ id: string; title: string; projectLabel: string }>;
+}
+
+/** Articulos y preposiciones: no distinguen una tarea de otra. */
+const STOPWORDS = new Set([
+  'de', 'del', 'la', 'las', 'el', 'los', 'un', 'una', 'unos', 'unas',
+  'para', 'con', 'por', 'en', 'y', 'al', 'su', 'sus', 'que',
+  'the', 'and', 'for', 'with', 'from',
+]);
+
+/**
+ * ¿Son la misma palabra? Tolerante a plural y a conjugacion, que es lo que
+ * rompe el reconocimiento al dictar: «arreglar» vs «arreglando», «optimizacion»
+ * vs «optimizando», «clientes» vs «cliente».
+ *
+ * Se compara el prefijo comun: hace falta que coincidan al menos 5 letras y la
+ * mitad de la palabra corta. Asi «reunion» y «revisando» (prefijo «re») NO se
+ * confunden, pero «arreglar» y «arreglando» (prefijo «arregla») si.
+ */
+export function mismaPalabra(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.length < 4 || b.length < 4) return false;
+  const max = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < max && a[i] === b[i]) i++;
+  return i >= 5 && i >= max * 0.5;
+}
+
+/** Palabras que de verdad identifican un titulo (sin articulos ni preposiciones). */
+export function significantTokens(text: string): string[] {
+  return normalize(text)
+    .split(' ')
+    .filter((w) => w.length >= 4 && !STOPWORDS.has(w));
+}
+
+/**
+ * Proporcion de las palabras del titulo que aparecen (o se parecen) en el texto
+ * dictado. 1 = todas. Devuelve 0 si el titulo no tiene palabras significativas.
+ */
+export function tokenOverlap(transcript: string, title: string): number {
+  const tokens = significantTokens(title);
+  if (!tokens.length) return 0;
+  const palabras = normalize(transcript).split(' ').filter(Boolean);
+  const aciertos = tokens.filter((t) => palabras.some((p) => mismaPalabra(p, t))).length;
+  return aciertos / tokens.length;
+}
+
+export interface TaskCandidate {
+  id: string;
+  title: string;
+  aliases?: string[];
+}
+
+export interface TaskPick<T extends TaskCandidate> {
+  item: T | null;
+  score: number;
+  via: 'similitud' | 'palabras' | 'ninguna';
+}
+
+/**
+ * Decide a que tarea se refiere lo dictado. PURA a proposito: es la parte con
+ * riesgo de falso positivo, asi que se puede verificar sin base de datos.
+ *
+ * Dos etapas:
+ *   1. Similitud directa del texto completo contra el titulo (rapida y exacta).
+ *   2. Palabras significativas del titulo dentro de la transcripcion, tolerando
+ *      conjugacion — el caso real: la frase es mas larga que el titulo.
+ */
+export function pickTaskForTranscript<T extends TaskCandidate>(
+  transcript: string,
+  candidates: T[],
+  threshold = 0.7,
+): TaskPick<T> {
+  if (!transcript.trim() || !candidates.length) return { item: null, score: 0, via: 'ninguna' };
+
+  const direct = bestMatch(
+    transcript,
+    candidates.map((c) => ({ id: c.id, name: c.title, aliases: c.aliases })),
+    threshold,
+  );
+  const directItem = direct.item ? candidates.find((c) => c.id === direct.item!.id) ?? null : null;
+  if (directItem) return { item: directItem, score: direct.score, via: 'similitud' };
+
+  const scored = candidates
+    .map((c) => ({ c, hit: tokenOverlap(transcript, c.title) }))
+    .sort((a, b) => b.hit - a.hit);
+  const mejor = scored[0];
+  if (mejor && mejor.hit >= 0.6) {
+    return { item: mejor.c, score: Math.max(direct.score, 0.7 + mejor.hit * 0.1), via: 'palabras' };
+  }
+  return { item: null, score: direct.score, via: 'ninguna' };
+}
+
+/**
+ * Empareja la transcripcion del audio con una tarea que ya existe.
+ *
+ * No decide por su cuenta: cuando hay coincidencia el bot la PROPONE y el
+ * trabajador confirma con un boton. Por eso el umbral busca recall y no
+ * precision absoluta: un falso positivo cuesta un toque, un falso negativo
+ * obliga a recorrer los tres pasos del asistente.
+ */
+export async function findTaskByTranscript(
+  userId: string,
+  roleKey: string,
+  transcript: string,
+  threshold = 0.7,
+): Promise<VoiceTaskMatch> {
+  const texto = normalize(transcript);
+  if (!texto) return { task: null, score: 0, alternatives: [] };
+
+  const proyectos = await listVisibleProjects(userId, roleKey);
+  if (!proyectos.length) return { task: null, score: 0, alternatives: [] };
+
+  const porId = new Map(proyectos.map((p) => [p.id, p]));
+  const tareas = await prisma.task.findMany({
+    where: {
+      projectId: { in: proyectos.map((p) => p.id) },
+      status: { in: ['OPEN', 'IN_PROGRESS'] },
+    },
+    orderBy: [{ lastWorkedAt: 'desc' }, { createdAt: 'desc' }],
+    take: 80,
+  });
+  if (!tareas.length) return { task: null, score: 0, alternatives: [] };
+
+  const candidatas = tareas.map((t) => {
+    const proyecto = t.projectId ? porId.get(t.projectId) : undefined;
+    return {
+      id: t.id,
+      title: t.title,
+      aliases: [proyecto?.name, proyecto?.client?.name].filter((v): v is string => Boolean(v)),
+      row: t,
+      proyecto,
+    };
+  });
+
+  const pick = pickTaskForTranscript(transcript, candidatas, threshold);
+  if (!pick.item) return { task: null, score: pick.score, alternatives: [] };
+
+  const elegida = pick.item;
+
+  return {
+    task: {
+      id: elegida.row.id,
+      title: elegida.row.title,
+      totalSeconds: elegida.row.totalSeconds,
+      entryCount: elegida.row.entryCount,
+      projectId: elegida.row.projectId,
+      projectLabel: elegida.proyecto?.name ?? 'sin proyecto',
+      clientLabel: elegida.proyecto?.client?.name,
+    },
+    score: pick.score,
+    alternatives: candidatas
+      .filter((c) => c.id !== elegida.id)
+      .slice(0, 2)
+      .map((c) => ({ id: c.id, title: c.row.title, projectLabel: c.proyecto?.name ?? 'sin proyecto' })),
+  };
+}
+
+/** Propuesta de tarea para un audio: se confirma con un boton, sin volver a grabar. */
+export function voiceTaskConfirmation(
+  task: {
+    id: string;
+    title: string;
+    totalSeconds: number;
+    entryCount: number;
+    projectLabel: string;
+    clientLabel?: string;
+  },
+  transcript: string,
+): GuidedReply {
+  const acumulado = task.entryCount
+    ? `⏱ Ya lleva <b>${humanDuration(task.totalSeconds)}</b> en ${task.entryCount} tramo(s).`
+    : '⏱ Todavía sin tiempo registrado.';
+  const lugar = [task.clientLabel, task.projectLabel].filter(Boolean).join(' · ');
+
   return {
     text: [
-      `📁 Proyecto: <b>${escapeHtml(projectLabel)}</b>`,
+      `🎙 <i>${escapeHtml(transcript)}</i>`,
       '',
-      '✍️ Escribe el <b>nombre de la nueva tarea</b>:',
-      '<i>Ejemplo: Maquetación del carrito</i>',
+      `🗂 Entendí que vas a trabajar en <b>${escapeHtml(task.title)}</b>`,
+      `📁 ${escapeHtml(lugar)}`,
+      acumulado,
+      '',
+      '¿Arranco el cronómetro aquí?',
     ].join('\n'),
-    markup: leaveKeyboard(),
+    markup: {
+      inline_keyboard: [
+        [{ text: '✅ Sí, registrar aquí', callback_data: `vconfirm:${task.id}` }],
+        [
+          { text: '🔀 Otra tarea', callback_data: 'vother:' },
+          { text: '➕ Tarea nueva', callback_data: 'vnew:' },
+        ],
+      ],
+    },
   };
 }
 

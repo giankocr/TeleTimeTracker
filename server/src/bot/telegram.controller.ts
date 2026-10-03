@@ -28,6 +28,9 @@ import {
   askClientSelection,
   askForAudioOrText,
   askNewTaskTitle,
+  cleanTaskTitle,
+  findTaskByTranscript,
+  voiceTaskConfirmation,
   askProjectSelection,
   askTaskSelection,
   beginGuidedStart,
@@ -394,14 +397,8 @@ async function handleStartLike(
   return { text: reply.text, markup: reply.markup, started: reply.started };
 }
 
-/** Titulo de tarea a partir de un audio: se limpia la coletilla de intencion. */
-function cleanTitleForTask(text: string): string {
-  const limpio = text
-    .replace(/^\s*(iniciando|inicio|empiezo|empezar|comienzo|arranco|trabajando en|nueva tarea)\s*/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return (limpio.length >= 3 ? limpio : text.trim()).slice(0, 180);
-}
+// La limpieza del titulo a partir de lo dictado vive en guided-start.service
+// (`cleanTaskTitle`): una sola implementacion para el texto y para el audio.
 
 /** Continua el alta guiada con el texto que acaba de escribir el usuario. */
 async function continueGuidedFlow(
@@ -573,13 +570,19 @@ async function handleMessage(message: TgMessage, started: number): Promise<void>
     if (flujoAudio?.step === 'ASK_PROJECT_NAME' && flujoAudio.mode === 'SELECT_AND_RECORD') {
       const res = await startSelectedTask(
         { userId: user.id, roleKey: user.roleKey, timezone: user.timezone, source: 'TELEGRAM_VOICE' },
-        { title: cleanTitleForTask(result.text), description: result.text },
+        // El audio que ABRIO el asistente describe el tramo; este segundo audio
+        // (si lo hay) solo pone el nombre.
+        { title: cleanTaskTitle(result.text), description: flujoAudio.voiceTranscript ?? result.text },
       );
       await reply(chatId, res.text, { reply_markup: res.markup ?? MAIN_KEYBOARD });
       return;
     }
 
-    await handleNaturalText(user, result.text, chatId, telegramId, 'VOICE', 'TELEGRAM_VOICE', started, message.message_id);
+    // Un audio SIEMPRE es un registro de tiempo: no se adivina la intencion,
+    // se abre el asistente (cliente -> proyecto -> tarea) con la transcripcion
+    // ya escuchada. Pausar y terminar se hacen con los botones del teclado o
+    // por escrito (regla acordada: el asistente no tiene excepciones).
+    await beginVoiceRegistration(user, chatId, result.text, telegramId, started);
     return;
   }
 
@@ -593,6 +596,67 @@ async function handleMessage(message: TgMessage, started: number): Promise<void>
 }
 
 const escapeForHtml = (v: string): string => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/**
+ * Un audio siempre significa «registrar tiempo».
+ *
+ * Si la transcripcion encaja con una tarea que ya existe, el bot la propone y
+ * el trabajador confirma con un boton. Si no encaja con nada, arranca el
+ * asistente en el paso 1 (cliente). En los dos casos la transcripcion queda
+ * guardada en el flujo: sera la descripcion del tramo y no hay que volver a
+ * grabar el audio.
+ */
+async function beginVoiceRegistration(
+  user: LinkedUser,
+  chatId: number,
+  transcript: string,
+  telegramId: string,
+  started: number,
+): Promise<void> {
+  const match = await findTaskByTranscript(user.id, user.roleKey, transcript);
+
+  if (match.task) {
+    startFlow(user.id, {
+      step: 'CONFIRM_VOICE_TASK',
+      mode: 'SELECT_AND_RECORD',
+      fromVoice: true,
+      voiceTranscript: transcript,
+      originalText: transcript,
+      selectedTaskId: match.task.id,
+      selectedTaskLabel: match.task.title,
+      selectedProjectId: match.task.projectId ?? undefined,
+      selectedProjectLabel: match.task.projectLabel,
+      clientLabel: match.task.clientLabel,
+      startAfterCreate: true,
+    });
+    const r = voiceTaskConfirmation(match.task, transcript);
+    await reply(chatId, r.text, { reply_markup: r.markup });
+    await logInteraction({
+      userId: user.id,
+      telegramId,
+      chatId: String(chatId),
+      kind: 'VOICE',
+      transcript,
+      intent: 'VOICE_MATCH_TASK',
+      reply: r.text,
+      latencyMs: Date.now() - started,
+    });
+    return;
+  }
+
+  const r = await askClientSelection(catalogContext(user), { transcript });
+  await reply(chatId, r.text, { reply_markup: r.markup });
+  await logInteraction({
+    userId: user.id,
+    telegramId,
+    chatId: String(chatId),
+    kind: 'VOICE',
+    transcript,
+    intent: 'VOICE_ASK_CONTEXT',
+    reply: r.text,
+    latencyMs: Date.now() - started,
+  });
+}
 
 async function handleNaturalText(
   user: LinkedUser | null,
@@ -661,7 +725,8 @@ async function handleNaturalText(
   if (activeFlow?.mode === 'SELECT_AND_RECORD' && activeFlow.step === 'ASK_PROJECT_NAME') {
     const res = await startSelectedTask(
       { userId: user.id, roleKey: user.roleKey, timezone: user.timezone, source },
-      { title: text, description: undefined },
+      // Si el asistente lo abrio un audio, ese audio describe el tramo.
+      { title: text, description: activeFlow.voiceTranscript },
     );
     await reply(chatId, res.text, { reply_markup: res.markup ?? MAIN_KEYBOARD });
     await logInteraction({
@@ -913,7 +978,19 @@ async function handleCallback(query: TgUpdate['callback_query']): Promise<void> 
         await reply_(chatId, 'Esa tarea ya no existe.');
         break;
       }
-      const r = askForAudioOrText(
+      // Si el flujo lo abrio una nota de voz, el audio ya esta: se registra sin
+      // volver a pedirlo y la transcripcion va como descripcion del tramo.
+      const flujoVoz = getFlow(user.id);
+      if (flujoVoz?.fromVoice && flujoVoz.voiceTranscript) {
+        const res = await startSelectedTask(
+          { userId: user.id, roleKey: user.roleKey, timezone: user.timezone, source: 'TELEGRAM_VOICE' },
+          { taskId: tarea.id, description: flujoVoz.voiceTranscript },
+        );
+        await reply_(chatId, res.text, res.markup ?? MAIN_KEYBOARD);
+        break;
+      }
+
+      const r = await askForAudioOrText(
         catalogContext(user),
         { id: tarea.id, title: tarea.title, totalSeconds: tarea.totalSeconds, entryCount: tarea.entryCount },
         tarea.project?.name ?? 'sin proyecto',
@@ -932,8 +1009,64 @@ async function handleCallback(query: TgUpdate['callback_query']): Promise<void> 
         await reply_(chatId, 'Se perdió el proyecto. Vuelve a empezar con /registrar.');
         break;
       }
-      const r = askNewTaskTitle(catalogContext(user), proyecto.name);
+      const r = askNewTaskTitle(catalogContext(user), proyecto.name, {
+        suggestion: flujo?.voiceTranscript,
+      });
       await reply_(chatId, r.text, r.markup);
+      break;
+    }
+    case 'vconfirm': {
+      // Confirmacion de un audio: se registra sobre la tarea propuesta.
+      const flujo = getFlow(user.id);
+      const tarea = value ? await prisma.task.findUnique({ where: { id: value } }) : null;
+      if (!tarea) {
+        clearFlow(user.id);
+        await reply_(chatId, 'Esa tarea ya no existe. Vuelve a enviar el audio.');
+        break;
+      }
+      const res = await startSelectedTask(
+        { userId: user.id, roleKey: user.roleKey, timezone: user.timezone, source: 'TELEGRAM_VOICE' },
+        { taskId: tarea.id, description: flujo?.voiceTranscript },
+      );
+      await reply_(chatId, res.text, res.markup ?? MAIN_KEYBOARD);
+      break;
+    }
+    case 'vother': {
+      // El emparejado no era el bueno: se elige a mano, conservando el audio.
+      const flujo = getFlow(user.id);
+      const r = await askClientSelection(catalogContext(user), { transcript: flujo?.voiceTranscript });
+      await reply_(chatId, r.text, r.markup);
+      break;
+    }
+    case 'vnew': {
+      // Tarea nueva dentro del proyecto propuesto por el emparejado.
+      const flujo = getFlow(user.id);
+      const proyecto = flujo?.selectedProjectId
+        ? await prisma.clientProject.findUnique({ where: { id: flujo.selectedProjectId } })
+        : null;
+      if (!proyecto) {
+        await reply_(chatId, 'Se perdió el proyecto. Vuelve a enviar el audio.');
+        break;
+      }
+      const r = askNewTaskTitle(catalogContext(user), proyecto.name, {
+        suggestion: flujo?.voiceTranscript,
+      });
+      await reply_(chatId, r.text, r.markup);
+      break;
+    }
+    case 'vusetitle': {
+      // Usa lo dictado como nombre de la tarea nueva.
+      const flujo = getFlow(user.id);
+      const transcript = flujo?.voiceTranscript ?? '';
+      if (!transcript) {
+        await reply_(chatId, 'Se perdió el audio. Vuelve a enviarlo.');
+        break;
+      }
+      const res = await startSelectedTask(
+        { userId: user.id, roleKey: user.roleKey, timezone: user.timezone, source: 'TELEGRAM_VOICE' },
+        { title: cleanTaskTitle(transcript), description: transcript },
+      );
+      await reply_(chatId, res.text, res.markup ?? MAIN_KEYBOARD);
       break;
     }
     case 'menu': {

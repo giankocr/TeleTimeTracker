@@ -48,7 +48,7 @@ export function menuText(companyName: string, linked: boolean): string {
     '',
     comandos,
     '',
-    '<i>También puedes escribir o dictar la tarea en lenguaje natural:</i>',
-    '<i>«iniciando tarea de maquetación del login para el cliente Acme»</i>',
+    '<i>Una nota de voz siempre registra tiempo: te pregunto cliente, proyecto y tarea.</i>',
+    '<i>Por texto vale: «iniciando tarea de maquetación del login para el cliente Acme».</i>',
   ].join('\n');
 }

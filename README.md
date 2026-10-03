@@ -203,11 +203,28 @@ Tablas de apoyo: **Pause** (pausas con motivo y duración), **EntryTag** (etique
 
 También hay un **teclado persistente** (Estado · Pendientes · Pausar · Retomar · Terminar) y **botones inline** en cada confirmación.
 
-### Lenguaje natural (voz o texto)
+### Notas de voz: siempre registran tiempo
+
+**Una nota de voz nunca se interpreta como comando.** Al recibir un audio el bot
+lo transcribe y abre el asistente **cliente → proyecto → tarea** (nueva o ya
+creada). Si lo dictado se parece a una tarea que ya existe, la **propone** y se
+confirma con un botón; si no se parece a nada, empieza por el cliente. La
+transcripción viaja con el flujo: es la **descripción del tramo** y, cuando la
+tarea es nueva, la **sugerencia de nombre** (un toque, o la escribes).
+
+El emparejado tolera el habla real: «estuve **arreglando** el carrito» encuentra
+«**Arreglar** el carrito» (comparación de palabras significativas, sin artículos,
+tolerando plural y conjugación). Aun así nunca decide solo: propone y confirma.
+
+Para **pausar, retomar, cambiar o terminar** están los botones del teclado y los
+comandos escritos (`/pausar`, `/retomar`, `/terminar`, `/cancelar`). El
+reconocimiento de intenciones (NLU) sigue aplicándose al **texto**.
+
+### Lenguaje natural (por texto)
 
 Ejemplos reales que el sistema entiende:
 
-| El trabajador dice… | Intent | Resultado |
+| El trabajador escribe… | Intent | Resultado |
 |---|---|---|
 | "Iniciando tarea de maquetación del login en el proyecto Portal Web del cliente Acme" | `START` | Abre segmento · título "maquetacion del login" · tipo `Maquetacion` |
 | "Pausa para reunión de equipo" | `PAUSE` | Detiene el reloj guardando el motivo |

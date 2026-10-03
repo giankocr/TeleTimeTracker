@@ -25,7 +25,9 @@ export type FlowStep =
   | 'SELECT_PROJECT'
   | 'SELECT_TASK'
   /** Esperando la nota de voz (o texto) para el contexto ya elegido. */
-  | 'AWAIT_AUDIO';
+  | 'AWAIT_AUDIO'
+  /** El flujo lo abrio una nota de voz y se propone una tarea que ya existe. */
+  | 'CONFIRM_VOICE_TASK';
 
 /** Que se pretendia al crear: solo el catalogo o iniciar una tarea despues. */
 export type FlowMode =
@@ -56,6 +58,14 @@ export interface GuidedFlow {
   selectedProjectLabel?: string;
   selectedTaskId?: string;
   selectedTaskLabel?: string;
+  /**
+   * El flujo lo abrio una NOTA DE VOZ. El audio ya esta transcrito, asi que no
+   * hay que volver a pedirlo: la transcripcion viaja en el flujo y se usa como
+   * descripcion del tramo (o como sugerencia de nombre si la tarea es nueva).
+   */
+  fromVoice?: boolean;
+  /** Transcripcion del audio que abrio el flujo. */
+  voiceTranscript?: string;
   createdAt: number;
 }
 

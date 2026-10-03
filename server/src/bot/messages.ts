@@ -82,7 +82,7 @@ export function startConfirmation(entry: EntryWithRelations, previous: EntryWith
   lines.push(`▶️ <b>Tarea iniciada</b>`);
   lines.push(entryLine(entry, timezone));
   lines.push('');
-  lines.push('<i>Usa los botones o envia una nota de voz para pausar, cambiar o terminar.</i>');
+  lines.push('<i>Para pausar, cambiar o terminar usa los botones o escríbelo: "pausa", "terminar".</i>');
   return lines.join('\n');
 }
 
@@ -92,7 +92,7 @@ export function pauseConfirmation(entry: EntryWithRelations, timezone: string): 
     '⏸ <b>Tarea en pausa</b>',
     entryLine(entry, timezone),
     paused ? `\nPausa acumulada: <b>${humanDuration(paused)}</b>` : '',
-    '\nCuando vuelvas, escribe <i>"retomo"</i> o envia otra nota de voz.',
+    '\nCuando vuelvas, escribe <i>"retomo"</i> o usa el botón <b>▶️ Retomar</b> (una nota de voz nueva abriría otro registro).',
   ]
     .filter(Boolean)
     .join('\n');
@@ -128,8 +128,8 @@ export function statusMessage(entry: EntryWithRelations | null, timezone: string
       '💤 <b>No tienes ninguna tarea en curso.</b>',
       `Hoy llevas <b>${humanDuration(todaySeconds)}</b> registrados.`,
       '',
-      'Envia una nota de voz o escribe algo como:',
-      '<i>"Iniciando tarea de maquetacion en el proyecto X del cliente Y"</i>',
+      'Envía una nota de voz con lo que vas a hacer y te pregunto cliente, proyecto y tarea.',
+      'Por texto también vale: <i>"Iniciando tarea de maquetacion en el proyecto X del cliente Y"</i>',
     ].join('\n');
   }
   const lines = ['📊 <b>Estado actual</b>', entryLine(entry, timezone)];
@@ -147,18 +147,23 @@ export function helpMessage(companyName: string, linked: boolean): string {
       ? 'Estás vinculado ✅ — puedes usar el bot con voz o texto.'
       : '⚠️ Tu cuenta de Telegram no está vinculada.\nToca <b>📱 Compartir mi número</b> (aquí abajo) o envía el código que te dio tu administrador: <code>/vincular ABCD-1234</code>.',
     '',
-    '<b>Ejemplos por voz o texto:</b>',
+    '<b>🎙 Una nota de voz siempre registra tiempo.</b>',
+    'Te pregunto cliente → proyecto → tarea (nueva o ya creada) y arranco el',
+    'cronómetro. Si lo que dictas se parece a una tarea que ya tienes, te la',
+    'propongo y confirmas con un botón.',
+    '',
+    '<b>Para pausar, retomar, cambiar o terminar:</b> los botones del teclado,',
+    'o escríbelo — "pausa", "retomo", "terminar".',
+    '',
+    '<b>Por texto</b> también entiende lenguaje natural:',
     '• "Iniciando tarea de maquetacion en el proyecto Tienda del cliente Acme"',
-    '• "Pausa para reunion de equipo"',
-    '• "Cambia a la tarea de soporte del cliente Globex"',
-    '• "Termine la tarea, ajuste el login y subi el fix"',
     '• "Reporte de hoy" · "Cuantas horas hice ayer"',
     '• "Cuanto llevo en el proyecto Portal Web"',
     '',
     '<b>¿No existe el cliente o el proyecto?</b> No pasa nada: te acompaño para',
     'crearlos en el chat y arranco el cronómetro con lo que ya me dijiste.',
     '',
-    '<b>¿Prefieres elegir con botones?</b> Usa /registrar: eliges cliente →',
+    '<b>¿Prefieres elegir antes de dictar?</b> Usa /registrar: eliges cliente →',
     'proyecto → tarea y luego envías la nota de voz para registrar el tiempo.',
     '',
     '<b>Comandos:</b>',
@@ -193,7 +198,7 @@ export function agendaMessage(
       lines.push(`${i + 1}. ${prio[t.priority] ?? '•'} ${escapeHtml(t.title)}${project}${due}`);
     });
   }
-  lines.push('', '<i>Para empezar una: envia una nota de voz diciendo en que proyecto vas a trabajar.</i>');
+  lines.push('', '<i>Para empezar una: envía una nota de voz diciendo en qué vas a trabajar y eliges cliente, proyecto y tarea.</i>');
   return lines.join('\n');
 }
 
