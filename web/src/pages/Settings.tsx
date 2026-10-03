@@ -487,8 +487,33 @@ export default function SettingsPage() {
               )}
             </div>
             <div className="row-between">
-              <span className="small">URL que debes registrar en BotFather</span>
-              <span className="mono tiny muted">{window.location.origin}</span>
+              <span className="small">Client ID usado actualmente</span>
+              <span className="mono tiny muted">
+                {integration?.loginClientId ?? '—'}
+                {integration?.loginClientIdFromBotFather ? '' : ' (respaldo: prefijo del token del bot)'}
+              </span>
+            </div>
+            <div className="stack-sm" style={{ marginTop: 4 }}>
+              <span className="small">URLs exactas que debe tener BotFather (Login Widget → Allowed URLs)</span>
+              {[window.location.origin, `${window.location.origin}/login`].map((url) => (
+                <div key={url} className="row" style={{ gap: 8 }}>
+                  <span className="mono tiny" style={{ flex: 1, overflowWrap: 'anywhere' }}>{url}</span>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(url);
+                      push('URL copiada', 'success');
+                    }}
+                  >
+                    Copiar
+                  </button>
+                </div>
+              ))}
+              <span className="tiny muted-2">
+                La segunda es la que usa el popup como <span className="mono">redirect_uri</span>: si falta, Telegram
+                responde «redirect_uri required».
+              </span>
             </div>
             <div className="row-between">
               <span className="small">Usuarios con Telegram vinculado</span>

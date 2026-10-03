@@ -31,7 +31,10 @@ interface LoginConfig {
      */
     loginMode: 'oidc' | 'widget' | 'oauth';
     clientId: string | null;
+    clientIdFromBotFather: boolean;
     oidcConfigured: boolean;
+    /** URL que Telegram exige registrar en BotFather (Allowed URL). */
+    webRedirectUri: string;
   };
   phoneOtp: { enabled: boolean };
 }
@@ -162,7 +165,16 @@ export default function LoginPage() {
 
     const onAuth = async (result: { id_token?: string; user?: unknown; error?: string }) => {
       if (result?.error) {
-        setError(result.error);
+        const raw = result.error;
+        // Telegram responde esto cuando la URL del panel no esta registrada en
+        // BotFather -> Login Widget -> Allowed URLs.
+        if (/redirect_uri/i.test(raw)) {
+          setError(
+            `Telegram rechazó la URL del panel: hay que registrarla en BotFather → Login Widget → Allowed URLs → ${config?.telegram.webRedirectUri ?? window.location.origin + '/login'}`,
+          );
+        } else {
+          setError(raw);
+        }
         return;
       }
       if (!result?.id_token) {
@@ -381,11 +393,30 @@ export default function LoginPage() {
                   <>
                     {/* Librería oficial (OIDC): popup + id_token verificado con JWKS. */}
                     <div ref={widgetRef} style={{ display: 'flex', justifyContent: 'center', minHeight: 48 }} />
-                    <p className="tiny muted-2" style={{ textAlign: 'center' }}>
-                      {config.telegram.clientId
-                        ? 'Registra tu dominio en BotFather → Login Widget para que Telegram acepte el retorno.'
-                        : 'Falta el Client ID de Telegram Login (BotFather → Login Widget) en Configuración.'}
-                    </p>
+                    {!config.telegram.clientIdFromBotFather ? (
+                      <Alert kind="warning">
+                        <b>Falta el Client ID de BotFather.</b> En Telegram el botón puede fallar con
+                        «redirect_uri required» hasta que lo configures:
+                        <ol style={{ margin: '6px 0 0', paddingLeft: 18, lineHeight: 1.7 }}>
+                          <li>
+                            <span className="mono">@BotFather</span> → <span className="mono">/mybots</span> → tu bot →{' '}
+                            <b>Login Widget</b>
+                          </li>
+                          <li>
+                            Añade esta <b>Allowed URL</b>:{' '}
+                            <span className="mono">{config.telegram.webRedirectUri || `${window.location.origin}/login`}</span>
+                          </li>
+                          <li>
+                            Copia el <b>Client ID</b> en <i>Configuración → TELEGRAM_LOGIN_CLIENT_ID</i>
+                          </li>
+                        </ol>
+                      </Alert>
+                    ) : (
+                      <p className="tiny muted-2" style={{ textAlign: 'center' }}>
+                        Si Telegram responde «redirect_uri required», añade esta URL en BotFather → Login Widget → Allowed
+                        URLs: <span className="mono">{config.telegram.webRedirectUri}</span>
+                      </p>
+                    )}
                   </>
                 ) : config?.telegram.loginMode === 'widget' ? (
                   <>

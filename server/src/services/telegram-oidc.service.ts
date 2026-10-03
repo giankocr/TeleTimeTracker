@@ -67,7 +67,22 @@ export interface OidcConfig {
   clientSecret: string | null;
   /** Client ID efectivo: el configurado o, como respaldo, el id del bot. */
   effectiveClientId: string | null;
+  /** true si el Client ID viene de BotFather (no del token del bot). */
+  clientIdFromBotFather: boolean;
   configured: boolean;
+}
+
+/**
+ * URL de retorno que Telegram exige tener registrada.
+ *
+ * La libreria `telegram-login.js` usa `response_type=post_message` y manda como
+ * `redirect_uri` la pagina donde vive el boton. Si esa URL no esta en la lista
+ * de **Allowed URLs** del Login Widget en BotFather, Telegram responde
+ * "redirect_uri required" y el popup no llega a abrirse.
+ */
+export function webLoginRedirectUri(publicUrl?: string | null): string {
+  const base = (publicUrl || env.PUBLIC_URL || '').replace(/\/$/, '');
+  return `${base}/login`;
 }
 
 export function oidcConfig(): OidcConfig {
@@ -81,6 +96,7 @@ export function oidcConfig(): OidcConfig {
     clientId: clientId || null,
     clientSecret: clientSecret || null,
     effectiveClientId,
+    clientIdFromBotFather: Boolean(clientId),
     configured: Boolean(effectiveClientId && clientSecret),
   };
 }

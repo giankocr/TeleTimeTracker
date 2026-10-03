@@ -230,10 +230,31 @@ Telegram **archivó el widget iframe antiguo** (`telegram-widget.js` con HMAC de
 **Configuración (una sola vez):**
 
 1. Abre **@BotFather** → `/mybots` → tu bot → **Login Widget**.
-2. Añade como **Allowed URL** el origen exacto de tu panel, p. ej. `https://timetracker.gianko.com` (y `http://localhost:8080` si pruebas en local).
-3. Copia el **Client ID** y el **Client Secret** que muestra BotFather y pégalos en *Configuración → Telegram* (`telegram.login_client_id` y `telegram.login_client_secret`).
+2. Añade estas **Allowed URLs** (las dos, para no depender de la ruta):
+
+   ```
+   https://tu-dominio.com
+   https://tu-dominio.com/login
+   ```
+
+   > ⚠️ **La segunda es obligatoria.** La librería oficial calcula el `redirect_uri` como
+   > `location.origin + location.pathname` (ver `openPopup` en `telegram-login.js`), y la
+   > pantalla de acceso vive en `/login`. Si esa URL exacta no está registrada, Telegram
+   > responde **`redirect_uri required`** y el popup ni siquiera se abre. En local añade
+   > también `http://localhost:8080` y `http://localhost:8080/login`.
+
+3. Copia el **Client ID** y el **Client Secret** que muestra BotFather y pégalos en *Configuración → Telegram* (`telegram.login_client_id` y `telegram.login_client_secret`). El panel muestra el Client ID que está usando y te avisa si es solo el respaldo extraído del token del bot.
 4. Asegúrate de que el panel se sirve por **HTTPS**.
 5. Cada usuario debe haber vinculado su cuenta: abre el bot, `/start` y **📱 Compartir mi número**.
+
+**Errores típicos y su causa**
+
+| Mensaje de Telegram | Causa | Solución |
+|---|---|---|
+| `redirect_uri required` | La URL donde está el botón no está en la lista blanca | Registrar `https://tu-dominio.com/login` en **Allowed URLs** |
+| `client_id invalid` / el popup no abre | El Client ID no es el de BotFather (se está usando el respaldo del token) | Pegar el **Client ID** real en Configuración |
+| El botón no aparece | Falta el token del bot o el Client ID | Revisar *Configuración → Telegram* |
+| El login se queda «cargando» y no vuelve | Falta `Cross-Origin-Opener-Policy: same-origin-allow-popups` o el navegador bloquea popups | Ya se envía desde el servidor; permite popups para el dominio |
 
 **Cómo se valida el `id_token`** (`server/src/services/telegram-oidc.service.ts`):
 

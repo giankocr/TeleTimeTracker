@@ -471,8 +471,15 @@ export interface LoginConfig {
   telegramLoginMode: 'oidc' | 'widget' | 'oauth';
   /** Client ID de BotFather (Login Widget) para la libreria OIDC. */
   loginClientId: string | null;
+  /** true si el Client ID viene de BotFather (no del token del bot). */
+  loginClientIdFromBotFather: boolean;
   /** true si hay Client ID y Secret: el flujo manual tambien esta disponible. */
   oidcConfigured: boolean;
+  /**
+   * URL que Telegram exige registrar como Allowed URL en BotFather.
+   * Si falta, el popup falla con "redirect_uri required".
+   */
+  webRedirectUri: string;
 }
 
 export async function loginConfig(): Promise<LoginConfig> {
@@ -480,7 +487,7 @@ export async function loginConfig(): Promise<LoginConfig> {
   const rawMode = getSetting(SETTING_KEYS.TELEGRAM_LOGIN_MODE, 'oidc');
   const mode: LoginConfig['telegramLoginMode'] =
     rawMode === 'widget' ? 'widget' : rawMode === 'oauth' ? 'oauth' : 'oidc';
-  const { oidcConfig } = await import('./telegram-oidc.service');
+  const { oidcConfig, webLoginRedirectUri } = await import('./telegram-oidc.service');
   const oidc = oidcConfig();
   return {
     companyName: getSetting(SETTING_KEYS.COMPANY_NAME, 'TeleTimeTracker'),
@@ -490,7 +497,9 @@ export async function loginConfig(): Promise<LoginConfig> {
     phoneOtpEnabled: Boolean(botId),
     telegramLoginMode: mode,
     loginClientId: oidc.effectiveClientId,
+    loginClientIdFromBotFather: oidc.clientIdFromBotFather,
     oidcConfigured: oidc.configured,
+    webRedirectUri: webLoginRedirectUri(),
   };
 }
 

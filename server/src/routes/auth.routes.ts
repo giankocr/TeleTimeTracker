@@ -55,7 +55,10 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         loginMode: config.telegramLoginMode,
         // Client ID para la libreria telegram-login.js (es publico por diseño).
         clientId: config.loginClientId,
+        clientIdFromBotFather: config.loginClientIdFromBotFather,
         oidcConfigured: config.oidcConfigured,
+        // URL exacta que debe estar en BotFather -> Login Widget -> Allowed URLs
+        webRedirectUri: config.webRedirectUri,
       },
       phoneOtp: { enabled: config.phoneOtpEnabled },
     });
