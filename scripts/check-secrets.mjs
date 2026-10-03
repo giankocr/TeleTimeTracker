@@ -32,6 +32,9 @@ const PATTERNS = [
   { name: 'Stripe key', re: /\b(sk|rk)_(live|test)_[A-Za-z0-9]{20,}\b/ },
   { name: 'Slack token', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
   { name: 'Private key block', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
+  // Webhook de deploy de EasyPanel: la URL lleva el token en la ruta.
+  { name: 'EasyPanel deploy webhook', re: /\/api\/deploy\/[a-f0-9]{32,}/i },
+  { name: 'Webhook de deploy (generic)', re: /https?:\/\/[^\s"']+\/deploy\/[A-Za-z0-9_-]{24,}/i },
   // Secretos "de este proyecto": cualquier valor no vacio con nombre reconocible.
   {
     name: 'Secreto asignado en un archivo',

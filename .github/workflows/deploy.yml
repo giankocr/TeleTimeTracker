@@ -1,0 +1,87 @@
+# ============================================================================
+#  Despliegue automático a EasyPanel
+#
+#  Cada push a `main` llama al webhook de deploy de la app en EasyPanel y
+#  espera a que termine. Si el despliegue falla, el workflow falla y te enteras.
+#
+#  CONFIGURACIÓN (una sola vez, en el repositorio de GitHub):
+#    Settings → Secrets and variables → Actions → New repository secret
+#
+#      EASYPANEL_DEPLOY_URL   URL del webhook de deploy de tu app
+#                             (EasyPanel → tu App → Deployments → webhook)
+#
+#  ⚠️ El token del webhook es un SECRETO: va en GitHub Secrets, nunca en el repo
+#     (el repositorio es público). Si se filtra, rótalo en EasyPanel y actualiza
+#     el secret.
+# ============================================================================
+
+name: Deploy a EasyPanel
+
+on:
+  push:
+    branches: [main]
+  # Permite lanzarlo a mano desde la pestaña Actions.
+  workflow_dispatch:
+
+# Evita despliegues simultáneos si haces varios push seguidos: se ejecuta el
+# último y se cancelan los anteriores.
+concurrency:
+  group: easypanel-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Disparar y verificar el despliegue
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comprobar que el secret existe
+        env:
+          DEPLOY_URL: ${{ secrets.EASYPANEL_DEPLOY_URL }}
+        run: |
+          if [ -z "$DEPLOY_URL" ]; then
+            echo "::error title=Falta EASYPANEL_DEPLOY_URL::Configura el secret en Settings → Secrets and variables → Actions. Ver README → 'Despliegue automático'."
+            exit 1
+          fi
+          echo "Secret presente (oculto en los logs)."
+
+      - name: Disparar el deploy
+        id: trigger
+        env:
+          DEPLOY_URL: ${{ secrets.EASYPANEL_DEPLOY_URL }}
+        run: |
+          set -euo pipefail
+          echo "Llamando al webhook de EasyPanel…"
+          # -s silencioso, -S muestra errores, -f falla con HTTP >= 400
+          response=$(curl -sS -f -X POST "$DEPLOY_URL" -H 'Content-Type: application/json' -d '{}' -w '\n%{http_code}')
+          code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+          echo "HTTP $code"
+          echo "Respuesta: ${body:0:500}"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Esperar a que el panel responda
+        env:
+          # Opcional: si defines APP_HEALTH_URL se comprueba que el panel revive.
+          # Ejemplo: https://timetracker.gianko.com/health
+          HEALTH_URL: ${{ secrets.APP_HEALTH_URL }}
+        run: |
+          set -uo pipefail
+          if [ -z "${HEALTH_URL:-}" ]; then
+            echo "::notice title=Sin verificación::Define el secret APP_HEALTH_URL para comprobar el arranque (p. ej. https://tu-dominio/health)."
+            exit 0
+          fi
+          echo "Esperando a $HEALTH_URL …"
+          for intento in $(seq 1 30); do
+            if curl -sS -f -m 10 "$HEALTH_URL" -o /tmp/health.json; then
+              echo "✅ El panel responde tras $((intento * 10))s:"
+              cat /tmp/health.json
+              # Si el health expone el estado del volumen, se avisa si no es escribible.
+              if grep -q '"writable":false' /tmp/health.json; then
+                echo "::warning title=Volumen no escribible::El contenedor arrancó pero /app/data no es escribible. Revisa el Mount Path en EasyPanel."
+              fi
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error title=El panel no respondió::Pasaron 5 minutos sin respuesta en $HEALTH_URL. Revisa los logs del servicio en EasyPanel."
+          exit 1

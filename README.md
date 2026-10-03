@@ -504,7 +504,27 @@ curl -s -H "Authorization: Bearer TOKEN" https://TU-DOMINIO/api/diagnostics
 
 Si algo quedó a medias, borra el volumen y redeploya: el arranque recrea el esquema y el usuario administrador automáticamente (perderás los datos, es un entorno nuevo).
 
-### 5.8 Actualizaciones y respaldos
+### 5.8 Despliegue automático en cada push (GitHub Actions)
+
+El repositorio incluye `.github/workflows/deploy.yml`: cada push a `main` llama al **webhook de deploy** de EasyPanel y luego comprueba que el panel revive.
+
+**Configuración (una sola vez):**
+
+1. En EasyPanel: abre tu **App** → pestaña **Deployments** y copia la URL del webhook (tiene la forma `https://tu-panel/api/deploy/<token>`).
+2. En GitHub: **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret | Obligatorio | Valor |
+|---|---|---|
+| `EASYPANEL_DEPLOY_URL` | Sí | La URL del webhook de EasyPanel |
+| `APP_HEALTH_URL` | Recomendado | `https://tu-dominio/health` — el workflow espera hasta 5 min a que responda |
+
+3. Haz un push a `main` y mira la pestaña **Actions**.
+
+> ⚠️ **El token del webhook es un secreto**: cualquiera que lo tenga puede forzar despliegues. Va **siempre** en GitHub Secrets, nunca en el repositorio (que es público). El escáner de `scripts/check-secrets.mjs` bloquea el commit si detecta una URL con `/api/deploy/<token>`.
+
+**Cómo sustituirlo por un runner propio** (alternativa sin depender del webhook): en EasyPanel, App → Deployments → activa **GitHub** como origen; así EasyPanel escucha los push directamente y no hace falta el workflow.
+
+### 5.9 Actualizaciones y respaldos
 
 ```bash
 # Actualizar: haz push y en EasyPanel pulsa Deploy (el volumen se conserva).
