@@ -410,7 +410,27 @@ docker compose up -d --build
 
 ---
 
-## 🔒 7. Notas de seguridad
+## 🔒 7. No subir credenciales al repositorio
+
+El proyecto incluye una guardia que **bloquea cualquier commit** con credenciales:
+
+```bash
+node scripts/check-secrets.mjs            # revisa los archivos versionados
+node scripts/check-secrets.mjs --staged   # revisa lo que está en el índice
+node scripts/check-secrets.mjs --all      # revisa todo el árbol (menos lo ignorado)
+```
+
+Detecta tokens de Telegram, claves de OpenAI/Anthropic/GitHub/AWS/Google/Stripe/Slack, bloques de clave privada y cualquier valor asignado a `JWT_SECRET`, `SETTINGS_ENC_KEY`, `TELEGRAM_WEBHOOK_SECRET`, `API_SERVICE_SECRET` o `ADMIN_PASSWORD`. También bloquea el commit si aparece un archivo que nunca debe versionarse (`.env`, `*.db`, `*.pem`, `id_rsa`, `.npmrc`).
+
+Para activarlo como hook en tu clon (los hooks no se versionan):
+
+```bash
+ln -sf ../../scripts/check-secrets.mjs .git/hooks/pre-commit
+```
+
+Además, `.gitignore` ya excluye `.env`, `data/`, `*.db*`, `dist/`, `node_modules/` y los logs. **Nunca** guardes secretos en `docker-compose.yml`, en el `Dockerfile` ni en el `README.md`: van siempre en las variables de entorno (o en la tabla `system_settings`, que los cifra con AES-256-GCM).
+
+## 🔒 8. Notas de seguridad
 
 - Contraseñas con **bcrypt** (10 rondas) y política mínima (8 caracteres, letras y números).
 - **JWT de acceso corto** (12 h por defecto) + **refresh token rotativo** guardado como hash SHA-256 en `auth_sessions`, revocable.
@@ -422,7 +442,7 @@ docker compose up -d --build
 
 ---
 
-## 📋 8. Variables de entorno
+## 📋 9. Variables de entorno
 
 Consulta `.env.example` para la lista completa y comentada. Resumen:
 
@@ -449,7 +469,7 @@ Consulta `.env.example` para la lista completa y comentada. Resumen:
 
 ---
 
-## ✅ 9. Verificación realizada
+## ✅ 10. Verificación realizada
 
 El proyecto se validó de extremo a extremo:
 
