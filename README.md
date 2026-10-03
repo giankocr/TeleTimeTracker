@@ -184,9 +184,15 @@ Ejemplos reales que el sistema entiende:
 | "Reporte de hoy" / "¿Cuántas horas hice ayer?" | `REPORT` | Resumen de horas |
 | "¿Qué tengo pendiente?" | `AGENDA` | Backlog + tarea en curso |
 
-**Dos motores de interpretación:**
-1. **OpenAI** (`gpt-4o-mini` con `response_format: json_object`): extrae `intent` + `clientName`, `projectName`, `taskTypeName`, `title`, `description`, `tag`, `date`.
-2. **Heurístico** (sin API key): expresiones regulares, palabras clave y limpieza de títulos. El bot **funciona igual sin OpenAI** (solo se pierde la transcripción de voz).
+**Proveedores de IA** — se elige solo, con el **mismo SDK** porque la API de Groq es compatible con la de OpenAI:
+
+| Proveedor | Transcripción | Interpretación (NLU) | Cuándo se usa |
+|---|---|---|---|
+| **Groq** (recomendado) | `whisper-large-v3` | `llama-3.1-8b-instant` | Si defines `GROQ_API_KEY`. Más rápido y barato |
+| **OpenAI** | `whisper-1` | `gpt-4o-mini` | Si defines `OPENAI_API_KEY` y no hay clave de Groq |
+| **Heurístico** (sin clave) | ✗ no transcribe | reglas y palabras clave | Siempre como respaldo: el bot funciona por texto |
+
+Con Groq se configuran `GROQ_WHISPER_MODEL` y `GROQ_LLM_MODEL` (editables desde el panel). En *Configuración → Probar claves de IA* se valida la clave contra la API y se listan los modelos disponibles, que es la forma más rápida de detectar una clave incompleta o un modelo retirado.
 
 Los nombres se resuelven con **matching difuso** (normalización + Levenshtein) contra los proyectos/clientes visibles para el usuario; si hay ambigüedad, el bot muestra botones para elegir.
 
@@ -563,7 +569,9 @@ Consulta `.env.example` para la lista completa y comentada. Resumen:
 | `TELEGRAM_MODE` | `webhook` | `webhook` · `polling` · `off` |
 | `TELEGRAM_WEBHOOK_SECRET` | — | Validación del webhook |
 | `PUBLIC_URL` | — | Dominio público (sin barra final) |
-| `OPENAI_API_KEY` | — | Whisper + NLU |
+| `GROQ_API_KEY` | — | **Recomendado** para los audios: transcripción + NLU |
+| `GROQ_WHISPER_MODEL` / `GROQ_LLM_MODEL` | `whisper-large-v3` / `llama-3.1-8b-instant` | Modelos de Groq |
+| `OPENAI_API_KEY` | — | Alternativa (Whisper + NLU) |
 | `WHISPER_MODEL` / `NLU_MODEL` | `whisper-1` / `gpt-4o-mini` | Modelos |
 | `GITHUB_TOKEN` / `GITHUB_ENRICH` | — / `true` | Integración GitHub |
 | `ALERTS_ENABLED` / `ALERT_CRON` / `DIGEST_CRON` | `true` / `* * * * *` / `0 8 * * 1-5` | Alertas |
@@ -581,6 +589,7 @@ El proyecto se validó de extremo a extremo:
 - Pruebas de API: login, RBAC, CRUD de clientes/proyectos/usuarios, cronómetro (start → pause → resume → stop con pausas descontadas), registro manual, dashboard, CSV y auditoría.
 - **Conversación real por webhook de Telegram**: vinculación con código, inicio por lenguaje natural, pausa, reanudar, cambio de tarea, fin de tarea, reporte, pendientes y botones inline.
 - **Nota de voz**: descarga del audio → transcripción → NLU → apertura y cierre del registro con proyecto, cliente y tipo de tarea correctos.
+- **Groq**: cliente apuntando a `https://api.groq.com/openai/v1` con modelo `whisper-large-v3` (verificado) y NLU con `llama-3.1-8b-instant`; la cadena completa de nota de voz crea el registro correcto. Clave inválida → `401 Invalid API Key` detectado por la prueba de claves del panel.
 - **Acceso con Telegram**: firma válida → JWT + RBAC; firma manipulada, autorización de 2 h y Telegram sin vincular → rechazados (401/403) y auditados. Formatos de hash `#tgAuthResult` y campos directos verificados.
 - **Widget oficial**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
 - **Acceso con teléfono + OTP**: teléfono no registrado (404), código incorrecto (401), anti-spam de 60 s (429), código correcto (200 con sesión) y reutilización del mismo código (401).

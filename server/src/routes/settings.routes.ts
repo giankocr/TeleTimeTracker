@@ -12,6 +12,7 @@ import {
   setSettings,
 } from '../services/settings.service';
 import { getMe as telegramGetMe, isConfigured as telegramConfigured, setWebhook, getWebhookInfo, deleteWebhook } from '../bot/telegram.api';
+import { transcriptionProvider } from '../services/audio.service';
 import { audit } from '../utils/audit';
 import { env } from '../config/env';
 
@@ -46,6 +47,10 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
         webhook: webhook ?? null,
         publicUrl: env.PUBLIC_URL || null,
         openaiConfigured: Boolean(getSetting(SETTING_KEYS.OPENAI_API_KEY) || env.OPENAI_API_KEY),
+        groqConfigured: Boolean(getSetting(SETTING_KEYS.GROQ_API_KEY) || env.GROQ_API_KEY),
+        // Proveedor efectivo de voz/NLU (Groq tiene prioridad si hay clave).
+        aiProvider: transcriptionProvider().provider,
+        transcriptionModel: transcriptionProvider().model,
         githubConfigured: Boolean(getSetting(SETTING_KEYS.GITHUB_TOKEN) || env.GITHUB_TOKEN),
       },
     });
@@ -99,6 +104,70 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       ok: true,
       settings: listSettingsForUI(),
       message: entries[SETTING_KEYS.TELEGRAM_BOT_TOKEN] ? 'Guardado. Reinicia el webhook desde el panel si cambiaste el token.' : 'Configuracion guardada.',
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/settings/ai/test — valida las claves de IA (Groq / OpenAI)
+  // Comprueba que la clave responde y QUE MODELOS ofrece, porque un modelo
+  // retirado o mal escrito es la causa habitual de que falle la voz.
+  // -------------------------------------------------------------------------
+  app.post('/ai/test', { preHandler: [requirePermission(PERMISSIONS.SETTINGS_WRITE)] }, async (request, reply) => {
+    const { nluProvider } = await import('../services/nlu.service');
+    const { groqKey, openaiKey, env: appEnv } = await import('../config/env');
+
+    const check = async (
+      provider: 'groq' | 'openai',
+      apiKey: string,
+      baseUrl: string,
+    ): Promise<{ provider: string; ok: boolean; error?: string; keyPreview?: string; models?: string[] }> => {
+      const preview = apiKey ? `${apiKey.slice(0, 6)}…${apiKey.slice(-4)} (${apiKey.length} caracteres)` : '';
+      try {
+        const res = await fetch(`${baseUrl}/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          return { provider, ok: false, keyPreview: preview, error: `HTTP ${res.status}: ${body.slice(0, 200)}` };
+        }
+        const json = (await res.json()) as { data?: Array<{ id: string }> };
+        return { provider, ok: true, keyPreview: preview, models: (json.data ?? []).map((m) => m.id).sort() };
+      } catch (err) {
+        return { provider, ok: false, keyPreview: preview, error: (err as Error).message };
+      }
+    };
+
+    const active = transcriptionProvider();
+    const results: Array<Record<string, unknown>> = [];
+
+    if (groqKey()) {
+      results.push({
+        ...(await check('groq', groqKey(), appEnv.GROQ_BASE_URL)),
+        active: active.provider === 'groq',
+        transcriptionModel: getSetting(SETTING_KEYS.GROQ_WHISPER_MODEL, appEnv.GROQ_WHISPER_MODEL),
+        chatModel: getSetting(SETTING_KEYS.GROQ_LLM_MODEL, appEnv.GROQ_LLM_MODEL),
+      });
+    }
+    if (openaiKey()) {
+      results.push({
+        ...(await check('openai', openaiKey(), 'https://api.openai.com/v1')),
+        active: active.provider === 'openai',
+        transcriptionModel: getSetting(SETTING_KEYS.WHISPER_MODEL, appEnv.WHISPER_MODEL),
+        chatModel: getSetting(SETTING_KEYS.NLU_MODEL, appEnv.NLU_MODEL),
+      });
+    }
+
+    if (!results.length) {
+      return reply.code(400).send({
+        ok: false,
+        error: 'No hay ninguna clave de IA configurada. Pega GROQ_API_KEY (recomendado) y guarda.',
+      });
+    }
+
+    await audit(request, { action: 'settings.ai_test', metadata: { providers: results.map((r) => r.provider) } });
+    return reply.send({
+      ok: results.every((r) => r.ok),
+      transcriptionProvider: active.provider,
+      nluProvider: nluProvider(),
+      results,
     });
   });
 

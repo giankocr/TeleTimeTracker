@@ -23,8 +23,13 @@ const SECTIONS: Array<{ title: string; hint?: string; keys: string[] }> = [
     keys: ['alerts.enabled', 'alerts.idle_minutes', 'alerts.digest_cron'],
   },
   {
-    title: 'Inteligencia artificial',
-    hint: 'Whisper transcribe las notas de voz; el modelo NLU decide la intención.',
+    title: 'Inteligencia artificial · Groq (recomendado para los audios)',
+    hint: 'Si hay clave de Groq, se usa Groq para transcribir (whisper-large-v3) y para interpretar. Requiere cuenta en console.groq.com.',
+    keys: ['groq.api_key', 'groq.whisper_model', 'groq.llm_model'],
+  },
+  {
+    title: 'Inteligencia artificial · OpenAI (alternativa)',
+    hint: 'Se usa solo si no hay clave de Groq. Whisper transcribe y el modelo NLU decide la intención.',
     keys: ['openai.api_key', 'openai.whisper_model', 'openai.nlu_model', 'openai.nlu_enabled'],
   },
   {
@@ -49,6 +54,9 @@ const LABELS: Record<string, string> = {
   'alerts.enabled': 'Alertas activas',
   'alerts.idle_minutes': 'Minutos sin tarea antes de alertar',
   'alerts.digest_cron': 'Cron del resumen diario',
+  'groq.api_key': 'GROQ_API_KEY (recomendado)',
+  'groq.whisper_model': 'Modelo de transcripción (Groq)',
+  'groq.llm_model': 'Modelo de interpretación (Groq)',
   'openai.api_key': 'OPENAI_API_KEY',
   'openai.whisper_model': 'Modelo de transcripción',
   'openai.nlu_model': 'Modelo de interpretación (NLU)',
@@ -76,6 +84,8 @@ export default function SettingsPage() {
   const [linkedUsers, setLinkedUsers] = useState(0);
   const [totalUsers, setTotalUsers] = useState(0);
   const [withPhone, setWithPhone] = useState(0);
+  const [testingAi, setTestingAi] = useState(false);
+  const [aiResult, setAiResult] = useState<any | null>(null);
   const [simulateText, setSimulateText] = useState('Iniciando tarea de maquetación en el proyecto Portal Web del cliente Acme');
   const [simulation, setSimulation] = useState<any>(null);
 
@@ -151,6 +161,22 @@ export default function SettingsPage() {
     }
   };
 
+  /** Prueba las claves de IA y lista los modelos disponibles. */
+  const testAi = async () => {
+    setTestingAi(true);
+    setAiResult(null);
+    try {
+      const res = await api.post<any>('/settings/ai/test');
+      setAiResult(res);
+      push(res.ok ? `IA lista: ${res.transcriptionProvider}` : 'Revisa el resultado de la prueba', res.ok ? 'success' : 'error');
+    } catch (err) {
+      const e = err as Error & { body?: any };
+      push(e.message, 'error');
+    } finally {
+      setTestingAi(false);
+    }
+  };
+
   const setWebhook = async () => {
     try {
       const res = await api.post<{ ok: boolean; error?: string }>('/settings/telegram/webhook');
@@ -221,8 +247,20 @@ export default function SettingsPage() {
               <span className="mono tiny muted">{integration?.publicUrl ?? 'no definida (PUBLIC_URL)'}</span>
             </div>
             <div className="row-between">
-              <span className="small">OpenAI (voz/NLU)</span>
-              {integration?.openaiConfigured ? <Badge kind="badge-success">configurado</Badge> : <Badge kind="badge-warning">no configurado</Badge>}
+              <span className="small">Transcripción de voz (Groq/OpenAI)</span>
+              {integration?.aiProvider === 'none' ? (
+                <Badge kind="badge-danger">sin configurar</Badge>
+              ) : (
+                <Badge kind="badge-success">
+                  {integration.aiProvider === 'groq' ? 'Groq' : 'OpenAI'} · {integration.transcriptionModel}
+                </Badge>
+              )}
+            </div>
+            <div className="row-between">
+              <span className="small">Claves de IA</span>
+              <span className="tiny muted mono">
+                Groq: {integration?.groqConfigured ? 'sí' : 'no'} · OpenAI: {integration?.openaiConfigured ? 'sí' : 'no'}
+              </span>
             </div>
             <div className="row-between">
               <span className="small">GitHub</span>
@@ -253,10 +291,52 @@ export default function SettingsPage() {
             )}
           </div>
 
+          {aiResult ? (
+            <div className="stack-sm" style={{ marginTop: 12 }}>
+              <div className="row">
+                <Badge kind={aiResult.ok ? 'badge-success' : 'badge-danger'}>
+                  Proveedor activo: {aiResult.transcriptionProvider}
+                </Badge>
+                <span className="tiny muted-2">NLU: {aiResult.nluProvider}</span>
+              </div>
+              {(aiResult.results ?? []).map((r: any) => (
+                <div key={r.provider} className="card" style={{ padding: 12 }}>
+                  <div className="row-between">
+                    <strong className="small" style={{ textTransform: 'capitalize' }}>
+                      {r.provider} {r.active ? '(en uso)' : ''}
+                    </strong>
+                    <Badge kind={r.ok ? 'badge-success' : 'badge-danger'}>{r.ok ? 'clave válida' : 'error'}</Badge>
+                  </div>
+                  <div className="tiny muted-2 mono" style={{ marginTop: 4 }}>
+                    {r.keyPreview}
+                  </div>
+                  <div className="tiny muted-2" style={{ marginTop: 4 }}>
+                    transcripción: <span className="mono">{r.transcriptionModel}</span> · interpretación:{' '}
+                    <span className="mono">{r.chatModel}</span>
+                  </div>
+                  {r.error ? <Alert kind="error">{r.error}</Alert> : null}
+                  {r.models?.length ? (
+                    <details style={{ marginTop: 6 }}>
+                      <summary className="tiny muted-2" style={{ cursor: 'pointer' }}>
+                        {r.models.length} modelos disponibles
+                      </summary>
+                      <div className="tiny mono muted-2" style={{ marginTop: 4, maxHeight: 120, overflowY: 'auto' }}>
+                        {r.models.filter((m: string) => /whisper|llama|mixtral|gemma/i.test(m)).join(', ') || r.models.slice(0, 20).join(', ')}
+                      </div>
+                    </details>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           {isBotAdmin ? (
             <div className="btn-row" style={{ marginTop: 14 }}>
               <button className="btn btn-sm" onClick={() => void testTelegram()}>
                 🔌 Probar token
+              </button>
+              <button className="btn btn-sm" onClick={() => void testAi()} disabled={testingAi}>
+                {testingAi ? '⏳ Probando IA…' : '🎙 Probar claves de IA'}
               </button>
               <button className="btn btn-sm btn-primary" onClick={() => void setWebhook()}>
                 🔗 Registrar webhook

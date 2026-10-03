@@ -111,7 +111,17 @@ export const env = {
   /** URL publica del panel, p.ej. https://tiempo.midominio.com (para setWebhook) */
   PUBLIC_URL: (process.env.PUBLIC_URL ?? '').replace(/\/$/, ''),
 
-  // --- IA (Whisper + NLU) ---
+  // --- IA: transcripcion de voz y NLU ---
+  //
+  // Hay dos proveedores posibles y se elige automaticamente:
+  //  1. Groq (si hay GROQ_API_KEY)  -> whisper-large-v3 + llama, muy rapido y barato
+  //  2. OpenAI (si hay OPENAI_API_KEY) -> whisper-1 + gpt-4o-mini
+  // El SDK es el mismo porque Groq expone una API compatible con OpenAI.
+  GROQ_API_KEY: process.env.GROQ_API_KEY ?? '',
+  GROQ_BASE_URL: (process.env.GROQ_BASE_URL ?? 'https://api.groq.com/openai/v1').replace(/\/$/, ''),
+  GROQ_WHISPER_MODEL: process.env.GROQ_WHISPER_MODEL ?? 'whisper-large-v3',
+  GROQ_LLM_MODEL: process.env.GROQ_LLM_MODEL ?? 'llama-3.1-8b-instant',
+
   OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? '',
   WHISPER_MODEL: process.env.WHISPER_MODEL ?? 'whisper-1',
   NLU_MODEL: process.env.NLU_MODEL ?? 'gpt-4o-mini',
@@ -146,4 +156,5 @@ export function effective(key: keyof AppEnv): any {
 export const telegramToken = (): string =>
   runtimeOverrides.TELEGRAM_BOT_TOKEN || env.TELEGRAM_BOT_TOKEN;
 export const openaiKey = (): string => runtimeOverrides.OPENAI_API_KEY || env.OPENAI_API_KEY;
+export const groqKey = (): string => runtimeOverrides.GROQ_API_KEY || env.GROQ_API_KEY;
 export const githubToken = (): string => runtimeOverrides.GITHUB_TOKEN || env.GITHUB_TOKEN;

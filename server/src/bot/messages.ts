@@ -180,5 +180,25 @@ export function projectPrompt(candidates: Array<{ name: string; clientName: stri
 export const errorMessage = (detail: string): string =>
   `⚠️ No pude procesar el mensaje.\n<i>${escapeHtml(truncate(detail, 300))}</i>\n\nIntenta de nuevo o escribe /ayuda.`;
 
-export const transcriptionFailed = (): string =>
-  '🎙 No pude transcribir el audio.\nVerifica que la OPENAI_API_KEY este configurada en el panel o escribe la tarea por texto.';
+/**
+ * Error de transcripcion. Se muestra el proveedor activo y el motivo real
+ * (clave invalida, modelo inexistente, audio corrupto...), porque "no pude
+ * transcribir" sin detalle obliga a revisar los logs del servidor.
+ */
+export const transcriptionFailed = (detail?: string, provider?: string, model?: string): string => {
+  const where = provider && provider !== 'none' ? ` (${provider}${model ? ` · ${model}` : ''})` : '';
+  const lines = [`🎙 No pude transcribir el audio${where}.`];
+  if (detail) lines.push(`<i>${escapeFor(detail)}</i>`);
+  if (!provider || provider === 'none') {
+    lines.push('', 'Configura <b>GROQ_API_KEY</b> (recomendado) o <b>OPENAI_API_KEY</b> en el panel de administración → Configuración.');
+  } else if (/401|invalid.?api.?key/i.test(detail ?? '')) {
+    lines.push('', 'La clave de IA parece inválida o incompleta: revísala en <b>Configuración</b> y usa <b>Probar claves de IA</b>.');
+  } else if (/model/i.test(detail ?? '')) {
+    lines.push('', 'Revisa el nombre del modelo en <b>Configuración</b>.');
+  }
+  lines.push('', 'Mientras tanto puedes escribir la tarea por texto.');
+  return lines.join('\n');
+};
+
+const escapeFor = (value: string): string =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

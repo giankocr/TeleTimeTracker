@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { openaiKey } from '../config/env';
+import { env, groqKey, openaiKey } from '../config/env';
 import { getSetting, getSettingBool, getSettingInt, SETTING_KEYS } from './settings.service';
 import type { BotIntent, ParsedCommand, ParsedEntities } from '../../../shared/types';
 
@@ -8,17 +8,37 @@ import type { BotIntent, ParsedCommand, ParsedEntities } from '../../../shared/t
  * del trabajador en una intencion estructurada (intent + entidades).
  * La transcripcion de audio vive en services/audio.service.ts.
  *
- * Motor 1: OpenAI GPT para extraer intencion y entidades.
+ * Motor 1: un LLM (Groq o OpenAI) para extraer intencion y entidades.
  * Motor 2 (fallback): heuristicas por expresiones regulares y palabras clave,
  * de modo que el bot siga funcionando si no hay API key configurada.
  */
 
+export type NluProvider = 'groq' | 'openai' | 'none';
+
+/**
+ * Proveedor de NLU: Groq si hay clave (rapido y barato), si no OpenAI.
+ * Ambos usan el mismo SDK porque la API de Groq es compatible.
+ */
+export function nluProvider(): NluProvider {
+  if (groqKey()) return 'groq';
+  if (openaiKey()) return 'openai';
+  return 'none';
+}
+
 const client = (): OpenAI | null => {
+  if (groqKey()) return new OpenAI({ apiKey: groqKey(), baseURL: env.GROQ_BASE_URL });
   const key = openaiKey();
   return key ? new OpenAI({ apiKey: key }) : null;
 };
 
-export const hasOpenAI = (): boolean => Boolean(openaiKey());
+/** Modelo de chat segun el proveedor activo. */
+const chatModel = (): string =>
+  nluProvider() === 'groq'
+    ? getSetting(SETTING_KEYS.GROQ_LLM_MODEL, env.GROQ_LLM_MODEL)
+    : getSetting(SETTING_KEYS.NLU_MODEL, env.NLU_MODEL);
+
+/** @deprecated usar nluProvider(); se mantiene por compatibilidad. */
+export const hasOpenAI = (): boolean => nluProvider() !== 'none';
 
 // ---------------------------------------------------------------------------
 // 2) Extraccion de intencion y entidades
@@ -96,7 +116,7 @@ export async function parseWithLLM(text: string, context?: { activeTask?: string
 
   try {
     const res = await openai.chat.completions.create({
-      model: getSetting(SETTING_KEYS.NLU_MODEL, 'gpt-4o-mini'),
+      model: chatModel(),
       temperature: 0,
       response_format: { type: 'json_object' },
       messages: [
@@ -272,6 +292,6 @@ export async function parseCommand(
 /** Resumen corto de la tarea activa para dar contexto al modelo. */
 export const settingsEcho = () => ({
   whisper: getSetting(SETTING_KEYS.WHISPER_MODEL, 'whisper-1'),
-  nlu: getSetting(SETTING_KEYS.NLU_MODEL, 'gpt-4o-mini'),
+  nlu: chatModel(),
   idleMinutes: getSettingInt(SETTING_KEYS.IDLE_ALERT_MIN, 45),
 });

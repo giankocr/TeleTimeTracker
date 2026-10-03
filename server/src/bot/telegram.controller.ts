@@ -381,7 +381,7 @@ async function handleMessage(message: TgMessage, started: number): Promise<void>
       mimeType: audio.mime_type ?? 'audio/ogg',
     });
     if (!result.ok || !result.text) {
-      await reply(chatId, transcriptionFailed());
+      await reply(chatId, transcriptionFailed(result.error, result.provider, result.model));
       await logInteraction({
         userId: user.id, telegramId, chatId: String(chatId), kind: 'VOICE',
         ok: false, error: result.error, latencyMs: Date.now() - started,
