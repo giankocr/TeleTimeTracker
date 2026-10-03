@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { api, tokens } from '../lib/api';
 import { useAuth, type SessionUser } from '../lib/auth';
@@ -20,7 +20,13 @@ type Mode = 'telegram' | 'phone' | 'email';
 
 interface LoginConfig {
   companyName: string;
-  telegram: { enabled: boolean; botId: string | null; botUsername: string | null };
+  telegram: {
+    enabled: boolean;
+    botId: string | null;
+    botUsername: string | null;
+    /** 'oauth' = botón propio (no necesita /setdomain) · 'widget' = widget oficial */
+    loginMode: 'oauth' | 'widget';
+  };
   phoneOtp: { enabled: boolean };
 }
 
@@ -41,6 +47,7 @@ export default function LoginPage() {
   const next = sanitizeNext(new URLSearchParams(location.search).get('next') || readPersistedLoginNext() || '/');
 
   const [config, setConfig] = useState<LoginConfig | null>(null);
+  const widgetRef = useRef<HTMLDivElement | null>(null);
   const [mode, setMode] = useState<Mode>('telegram');
   const [inTelegramWebView, setInTelegramWebView] = useState(false);
 
@@ -115,6 +122,49 @@ export default function LoginPage() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // El widget oficial responde en un iframe/popup y nos avisa por postMessage.
+  useEffect(() => {
+    if (config?.telegram.loginMode !== 'widget') return;
+    const onMessage = (event: MessageEvent) => {
+      // Solo se aceptan mensajes de nuestro propio origen.
+      if (event.origin !== window.location.origin) return;
+      const payload = event.data as
+        | { type?: string; data?: { accessToken: string; refreshToken: string; user: SessionUser }; error?: string }
+        | undefined;
+      if (!payload || payload.type !== 'ttt-telegram-widget-auth') return;
+      if (payload.error) {
+        setError(payload.error);
+        return;
+      }
+      if (payload.data) void finishLogin(payload.data);
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config?.telegram.loginMode]);
+
+  // Inyecta el script oficial del widget (Telegram sustituye el div por el botón).
+  useEffect(() => {
+    const telegram = config?.telegram;
+    if (telegram?.loginMode !== 'widget' || !telegram.botUsername || !widgetRef.current) return;
+
+    const container = widgetRef.current;
+    container.replaceChildren();
+    const script = document.createElement('script');
+    script.src = 'https://telegram.org/js/telegram-widget.js?22';
+    script.async = true;
+    script.setAttribute('data-telegram-login', telegram.botUsername);
+    script.setAttribute('data-size', 'large');
+    script.setAttribute('data-radius', '9');
+    script.setAttribute('data-request-access', 'write');
+    // Los datos llegan por POST (form-urlencoded) a este endpoint, que responde
+    // HTML y nos devuelve la sesión por postMessage.
+    script.setAttribute('data-auth-url', `${window.location.origin}/api/auth/telegram/widget`);
+    container.appendChild(script);
+
+    return () => container.replaceChildren();
+  }, [config?.telegram.loginMode, config?.telegram.botUsername]);
 
   const startTelegramLogin = () => {
     const botId = config?.telegram.botId;
@@ -244,14 +294,29 @@ export default function LoginPage() {
                 <p className="small muted">
                   Entra con tu cuenta de Telegram ya vinculada. No necesitas recordar contraseña.
                 </p>
-                <button type="button" className="btn btn-block" onClick={startTelegramLogin} disabled={busy} style={{ background: '#2AABEE', borderColor: 'transparent', color: '#fff' }}>
-                  <TelegramLogo />
-                  {busy ? 'Completando…' : 'Entrar con Telegram'}
-                </button>
-                <p className="tiny muted-2" style={{ textAlign: 'center' }}>
-                  Si aún no vinculaste tu cuenta, abre el bot {config?.telegram.botUsername ? `(@${config.telegram.botUsername})` : ''} y toca{' '}
-                  <b>📱 Compartir mi número</b>.
-                </p>
+
+                {config?.telegram.loginMode === 'widget' ? (
+                  <>
+                    {/* Widget oficial de Telegram: requiere el dominio registrado en BotFather (/setdomain). */}
+                    <div ref={widgetRef} style={{ display: 'flex', justifyContent: 'center', minHeight: 48 }} />
+                    <p className="tiny muted-2" style={{ textAlign: 'center' }}>
+                      ¿No ves el botón? El dominio debe estar registrado en BotFather con{' '}
+                      <span className="mono">/setdomain</span>. Mientras tanto usa la pestaña{' '}
+                      <b>Teléfono + código</b>.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" className="btn btn-block" onClick={startTelegramLogin} disabled={busy} style={{ background: '#2AABEE', borderColor: 'transparent', color: '#fff' }}>
+                      <TelegramLogo />
+                      {busy ? 'Completando…' : 'Entrar con Telegram'}
+                    </button>
+                    <p className="tiny muted-2" style={{ textAlign: 'center' }}>
+                      Si aún no vinculaste tu cuenta, abre el bot {config?.telegram.botUsername ? `(@${config.telegram.botUsername})` : ''} y toca{' '}
+                      <b>📱 Compartir mi número</b>.
+                    </p>
+                  </>
+                )}
               </>
             ) : (
               <Alert kind="warning">

@@ -26,6 +26,8 @@ export const SETTING_KEYS = {
   WORK_END: 'work.default_end',
   TIMEZONE: 'work.default_timezone',
   COMPANY_NAME: 'ui.company_name',
+  /** 'oauth' (boton propio, no necesita /setdomain) o 'widget' (widget oficial). */
+  TELEGRAM_LOGIN_MODE: 'telegram.login_mode',
   WELCOME_MESSAGE: 'bot.welcome_message',
 } as const;
 
@@ -51,6 +53,7 @@ const DEFAULTS: Record<string, string> = {
   [SETTING_KEYS.WORK_END]: '18:00',
   [SETTING_KEYS.TIMEZONE]: env.DEFAULT_TIMEZONE,
   [SETTING_KEYS.COMPANY_NAME]: 'TeleTimeTracker',
+  [SETTING_KEYS.TELEGRAM_LOGIN_MODE]: 'oauth',
   [SETTING_KEYS.WELCOME_MESSAGE]:
     'Hola {name}! Envia una nota de voz o escribe que estas haciendo y empiezo a cronometrar.',
 };

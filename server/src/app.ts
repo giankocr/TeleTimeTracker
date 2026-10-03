@@ -10,6 +10,7 @@ import { env, dataDirStatus } from './config/env';
 import { prisma } from './db/prisma';
 
 import authRoutes from './routes/auth.routes';
+import authFormRoutes from './routes/auth-form.routes';
 import userRoutes from './routes/users.routes';
 import roleRoutes from './routes/roles.routes';
 import clientRoutes from './routes/clients.routes';
@@ -44,6 +45,20 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(jwt, { secret: env.JWT_SECRET });
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 
+  // El widget oficial de Telegram postea en application/x-www-form-urlencoded,
+  // no en JSON: sin este parser el body llegaria vacio y el login fallaria.
+  app.addContentTypeParser(
+    'application/x-www-form-urlencoded',
+    { parseAs: 'string' },
+    (_request, body, done) => {
+      try {
+        done(null, Object.fromEntries(new URLSearchParams(String(body)).entries()));
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    },
+  );
+
   // ---------------------------------------------------------------------
   // Health / readiness
   // ---------------------------------------------------------------------
@@ -69,6 +84,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   // Rutas de la API
   // ---------------------------------------------------------------------
   await app.register(authRoutes, { prefix: '/api/auth' });
+  // Rutas del widget oficial de Telegram (responden HTML, no JSON).
+  await app.register(authFormRoutes, { prefix: '/api/auth' });
   await app.register(userRoutes, { prefix: '/api/users' });
   await app.register(roleRoutes, { prefix: '/api/roles' });
   await app.register(clientRoutes, { prefix: '/api' }); // /api/clients, /api/projects, /api/task-types

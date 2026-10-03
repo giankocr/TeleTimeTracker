@@ -52,6 +52,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         enabled: config.telegramEnabled,
         botId: config.botId,
         botUsername: config.botUsername,
+        loginMode: config.telegramLoginMode,
       },
       phoneOtp: { enabled: config.phoneOtpEnabled },
     });

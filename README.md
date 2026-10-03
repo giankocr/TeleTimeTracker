@@ -211,6 +211,35 @@ Si lo dejas vacío, el webhook acepta cualquier petición firmada: funciona, per
 - Si escribes un valor nuevo, se reemplaza (se guarda cifrado con AES-256-GCM).
 - Si **borras el campo y guardas**, se elimina el valor guardado y el sistema vuelve a usar el de la variable de entorno (`.env`). Es la forma de deshacer un valor equivocado.
 
+### Botón de Telegram: dos modos (`telegram.login_mode`)
+
+En *Configuración → Telegram → «Botón de acceso con Telegram»* se elige cómo entra la gente con Telegram:
+
+| Modo | Qué usa | Requisito | Cuándo elegirlo |
+|---|---|---|---|
+| **`oauth`** (por defecto) | Botón propio → `oauth.telegram.org/auth` con el `bot_id` público | Solo el token del bot | Recomendado: funciona sin tocar BotFather y también dentro del navegador de Telegram |
+| **`widget`** | **Widget oficial** de Telegram (`telegram-widget.js`) | **Registrar el dominio en BotFather** con `/setdomain` | Si prefieres el botón nativo de Telegram con tu foto de usuario |
+
+**Cómo activar el modo widget:**
+
+1. En *Configuración* cambia el ajuste a **Widget oficial de Telegram** (se aplica al instante, sin rebuild).
+2. Abre **@BotFather** → `/mybots` → tu bot → **Bot Settings → Domain** → `/setdomain`.
+3. Escribe el dominio **exacto, sin `https://` y sin barra final**:
+   ```
+   timetracker.gianko.com
+   ```
+   Telegram exige HTTPS (solo admite `http` para `localhost`). Si el dominio no está registrado, el widget **no se renderiza** y la pantalla de login lo avisa.
+4. Recarga la pantalla de login: el botón nativo aparece automáticamente.
+
+> El paso de `/setdomain` **no se puede automatizar**: la Bot API no expone esa configuración, solo se puede hacer desde el chat con BotFather. Por eso el modo `oauth` es el que viene por defecto.
+
+**Cómo funcionan por dentro (ambos modos):**
+
+- **OAuth**: el navegador abre Telegram, que devuelve al usuario a `/login/telegram/callback` con los datos firmados en el hash (`#tgAuthResult`), y el cliente los reenvía a `POST /api/auth/telegram/oauth`.
+- **Widget**: el script oficial envía un **POST `application/x-www-form-urlencoded`** a `data-auth-url` (`/api/auth/telegram/widget`). Ese endpoint responde **HTML** (no JSON) con la sesión ya emitida y avisa al panel por `postMessage`; el panel valida el origen del mensaje antes de aceptarlo. También admite `GET` con los parámetros en la query.
+
+En los dos casos la verificación es la misma y ocurre **solo en el servidor**: HMAC-SHA256 con `SHA256(bot_token)`, comparación en tiempo constante, rechazo de autorizaciones de más de 1 hora y exigencia de cuenta vinculada y activa.
+
 ### Acceso al panel con Telegram (tres vías)
 
 Igual que en NosotrosConstruimos, la pantalla de login ofrece **tres formas de entrar**:
@@ -466,6 +495,7 @@ docker compose up -d --build
 |---|---|---|
 | `GET` | `/api/auth/config` | Config pública del login (empresa, `bot_id`, disponibilidad de Telegram y de OTP) |
 | `POST` | `/api/auth/telegram/oauth` | Login con Telegram OAuth (acepta los campos o el hash `#tgAuthResult`) |
+| `POST`/`GET` | `/api/auth/telegram/widget` | Endpoint del widget oficial: recibe form-urlencoded y responde HTML con la sesión |
 | `POST` | `/api/auth/phone/request` · `/phone/verify` | Acceso con teléfono + código enviado por el bot |
 | `GET/PATCH/DELETE` | `/api/users/bot-contacts` | Solicitudes de acceso llegadas desde el bot |
 | `GET` | `/api/auth/telegram/login` | *(compatibilidad)* Login Widget clásico |
@@ -552,5 +582,6 @@ El proyecto se validó de extremo a extremo:
 - **Conversación real por webhook de Telegram**: vinculación con código, inicio por lenguaje natural, pausa, reanudar, cambio de tarea, fin de tarea, reporte, pendientes y botones inline.
 - **Nota de voz**: descarga del audio → transcripción → NLU → apertura y cierre del registro con proyecto, cliente y tipo de tarea correctos.
 - **Acceso con Telegram**: firma válida → JWT + RBAC; firma manipulada, autorización de 2 h y Telegram sin vincular → rechazados (401/403) y auditados. Formatos de hash `#tgAuthResult` y campos directos verificados.
+- **Widget oficial**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
 - **Acceso con teléfono + OTP**: teléfono no registrado (404), código incorrecto (401), anti-spam de 60 s (429), código correcto (200 con sesión) y reutilización del mismo código (401).
 - **Vinculación desde el bot**: compartir el número sin cuenta → solicitud PENDING visible para el admin; aprobación → cuenta creada con rol y Telegram vinculado; segundo intento → vinculación automática; contacto ajeno → rechazado.

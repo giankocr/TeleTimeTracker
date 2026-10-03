@@ -463,16 +463,24 @@ export interface LoginConfig {
   botUsername: string | null;
   telegramEnabled: boolean;
   phoneOtpEnabled: boolean;
+  /**
+   * 'oauth'  -> boton propio que abre oauth.telegram.org (no necesita /setdomain)
+   * 'widget' -> widget oficial de Telegram (requiere registrar el dominio en
+   *             BotFather con /setdomain y postea en form-urlencoded)
+   */
+  telegramLoginMode: 'oauth' | 'widget';
 }
 
 export async function loginConfig(): Promise<LoginConfig> {
   const botId = getBotId();
+  const rawMode = getSetting(SETTING_KEYS.TELEGRAM_LOGIN_MODE, 'oauth');
   return {
     companyName: getSetting(SETTING_KEYS.COMPANY_NAME, 'TeleTimeTracker'),
     botId,
     botUsername: botId ? await getBotUsername() : null,
     telegramEnabled: Boolean(botId),
     phoneOtpEnabled: Boolean(botId),
+    telegramLoginMode: rawMode === 'widget' ? 'widget' : 'oauth',
   };
 }
 

@@ -30,7 +30,7 @@ const SECTIONS: Array<{ title: string; hint?: string; keys: string[] }> = [
   {
     title: 'Telegram',
     hint: 'Si cambias el token, vuelve a registrar el webhook.',
-    keys: ['telegram.bot_token', 'telegram.webhook_secret'],
+    keys: ['telegram.bot_token', 'telegram.webhook_secret', 'telegram.login_mode'],
   },
   {
     title: 'GitHub',
@@ -55,6 +55,7 @@ const LABELS: Record<string, string> = {
   'openai.nlu_enabled': 'Usar IA para interpretar mensajes',
   'telegram.bot_token': 'TELEGRAM_BOT_TOKEN',
   'telegram.webhook_secret': 'TELEGRAM_WEBHOOK_SECRET',
+  'telegram.login_mode': 'Botón de acceso con Telegram',
   'github.token': 'GITHUB_TOKEN',
   'github.enrich_enabled': 'Adjuntar commits/PRs al cerrar tareas',
   'bot.welcome_message': 'Mensaje de bienvenida',
@@ -306,7 +307,17 @@ export default function SettingsPage() {
                     label={LABELS[key] ?? key}
                     hint={row?.isSecret ? 'Guardado cifrado. Deja el valor enmascarado para no cambiarlo.' : undefined}
                   >
-                    {isBool ? (
+                    {key === 'telegram.login_mode' ? (
+                      <select
+                        className="select"
+                        value={current || 'oauth'}
+                        disabled={!canWrite}
+                        onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+                      >
+                        <option value="oauth">Botón propio (OAuth) — recomendado, no necesita /setdomain</option>
+                        <option value="widget">Widget oficial de Telegram — requiere registrar el dominio en BotFather</option>
+                      </select>
+                    ) : isBool ? (
                       <label className="checkbox">
                         <input
                           type="checkbox"
@@ -387,21 +398,44 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <Alert kind="info">
-            <b>No hace falta configurar /setdomain en BotFather</b> para este flujo: el botón usa la autorización
-            oficial de Telegram y valida el origen en el servidor. Solo necesitas:
-            <ol style={{ margin: '8px 0 0', paddingLeft: 18, lineHeight: 1.8 }}>
-              <li>Guardar aquí el <b>token del bot</b> (de @BotFather).</li>
-              <li>
-                Que cada usuario <b>vincule su Telegram</b>: abre el bot, toca <span className="mono">/start</span> y
-                pulsa <b>📱 Compartir mi número</b> (o usa el código de vinculación del panel).
-              </li>
-              <li>
-                Que su <b>teléfono</b> esté registrado en su usuario (columna «Teléfono» en Usuarios) para poder entrar
-                con «Teléfono + código».
-              </li>
-            </ol>
-            En producción el panel debe servirse por <b>HTTPS</b> para que Telegram acepte el retorno.
+          <Alert kind={integration?.telegramLoginMode === 'widget' ? 'warning' : 'info'}>
+            {integration?.telegramLoginMode === 'widget' ? (
+              <>
+                <b>Modo widget activo: hace falta registrar el dominio en BotFather</b> o el botón no aparecerá.
+                <ol style={{ margin: '8px 0 0', paddingLeft: 18, lineHeight: 1.8 }}>
+                  <li>
+                    Abre <span className="mono">@BotFather</span> → <span className="mono">/mybots</span> → tu bot →{' '}
+                    <b>Bot Settings → Domain</b> → <span className="mono">/setdomain</span>
+                  </li>
+                  <li>
+                    Escribe <b>exactamente</b> (sin <span className="mono">https://</span> y sin barra final):{' '}
+                    <span className="mono">{(integration?.publicUrl ?? window.location.origin).replace(/^https?:\/\//, '').replace(/\/$/, '')}</span>
+                  </li>
+                  <li>Recarga esta pantalla de login: el widget aparecerá automáticamente.</li>
+                </ol>
+              </>
+            ) : (
+              <>
+                <b>No hace falta configurar /setdomain en BotFather</b> para este flujo: el botón usa la autorización
+                oficial de Telegram y valida el origen en el servidor. Solo necesitas:
+                <ol style={{ margin: '8px 0 0', paddingLeft: 18, lineHeight: 1.8 }}>
+                  <li>
+                    Guardar aquí el <b>token del bot</b> (de @BotFather).
+                  </li>
+                  <li>
+                    Que cada usuario <b>vincule su Telegram</b>: abre el bot, toca <span className="mono">/start</span> y
+                    pulsa <b>📱 Compartir mi número</b> (o usa el código de vinculación del panel).
+                  </li>
+                  <li>
+                    Que su <b>teléfono</b> esté registrado en su usuario (columna «Teléfono» en Usuarios) para poder
+                    entrar con «Teléfono + código».
+                  </li>
+                </ol>
+                <div style={{ marginTop: 6 }}>
+                  En producción el panel debe servirse por <b>HTTPS</b> para que Telegram acepte el retorno.
+                </div>
+              </>
+            )}
           </Alert>
 
           <p className="tiny muted-2">
