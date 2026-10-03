@@ -60,6 +60,21 @@ export async function buildApp(): Promise<FastifyInstance> {
   );
 
   // ---------------------------------------------------------------------
+  // Cabeceras
+  //
+  // IMPORTANTE: telegram-login.js completa el login comunicandose con una
+  // ventana popup. Si el panel sirve `Cross-Origin-Opener-Policy: same-origin`
+  // esa comunicacion se bloquea y el login falla. Se usa `same-origin-allow-popups`
+  // y se anaden cabeceras basicas de seguridad.
+  // ---------------------------------------------------------------------
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    return payload;
+  });
+
+  // ---------------------------------------------------------------------
   // Health / readiness
   // ---------------------------------------------------------------------
   // Healthcheck del contenedor: responde 200 mientras el proceso viva (asi la

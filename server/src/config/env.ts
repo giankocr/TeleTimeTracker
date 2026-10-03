@@ -106,6 +106,10 @@ export const env = {
 
   // --- Telegram ---
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN ?? '',
+  // Telegram Login (BotFather -> Login Widget). Requerido por el flujo OIDC:
+  // el id_token se valida contra estos valores (aud = Client ID).
+  TELEGRAM_LOGIN_CLIENT_ID: process.env.TELEGRAM_LOGIN_CLIENT_ID ?? '',
+  TELEGRAM_LOGIN_CLIENT_SECRET: process.env.TELEGRAM_LOGIN_CLIENT_SECRET ?? '',
   TELEGRAM_MODE: (process.env.TELEGRAM_MODE ?? 'webhook') as 'webhook' | 'polling' | 'off',
   TELEGRAM_WEBHOOK_SECRET: process.env.TELEGRAM_WEBHOOK_SECRET ?? '',
   /** URL publica del panel, p.ej. https://tiempo.midominio.com (para setWebhook) */

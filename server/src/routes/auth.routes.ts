@@ -53,6 +53,9 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         botId: config.botId,
         botUsername: config.botUsername,
         loginMode: config.telegramLoginMode,
+        // Client ID para la libreria telegram-login.js (es publico por diseño).
+        clientId: config.loginClientId,
+        oidcConfigured: config.oidcConfigured,
       },
       phoneOtp: { enabled: config.phoneOtpEnabled },
     });
@@ -104,6 +107,66 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(outcome.status).send({ error: outcome.error, code: outcome.code });
     }
     return completeLogin(request, reply, outcome.user, 'telegram');
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/auth/telegram/oidc — Telegram Login (libreria oficial / OIDC)
+  //
+  // La libreria `telegram-login.js` abre un popup y devuelve un **id_token**
+  // (JWT firmado con RS256). Aqui se valida contra el JWKS de Telegram
+  // (firma, iss, aud y exp) y, si la cuenta esta vinculada, se abre sesion.
+  // -------------------------------------------------------------------------
+  app.post('/telegram/oidc', async (request, reply) => {
+    const parsed = z
+      .object({
+        idToken: z.string().min(20).optional(),
+        id_token: z.string().min(20).optional(),
+        nonce: z.string().max(200).optional(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Envia el id_token de Telegram', code: 'ID_TOKEN_MISSING' });
+    }
+    const idToken = parsed.data.idToken ?? parsed.data.id_token!;
+
+    const { verifyTelegramIdToken, resolveUserFromClaims } = await import('../services/telegram-oidc.service');
+    const verified = await verifyTelegramIdToken(idToken, { nonce: parsed.data.nonce });
+    if (!verified.ok) {
+      await audit(request, { action: 'auth.telegram_login_failed', metadata: { code: verified.code, reason: verified.error } });
+      return reply.code(401).send({ error: verified.error, code: verified.code });
+    }
+
+    const outcome = await resolveUserFromClaims(verified.claims);
+    if (!outcome.ok || !outcome.user) {
+      await audit(request, {
+        action: 'auth.telegram_login_failed',
+        metadata: { telegramId: String(verified.claims.id ?? verified.claims.sub), code: outcome.code, reason: outcome.error },
+      });
+      return reply.code(outcome.status).send({ error: outcome.error, code: outcome.code });
+    }
+
+    await audit(request, {
+      action: 'auth.login_telegram',
+      entity: 'user',
+      entityId: outcome.user.id,
+      userId: outcome.user.id,
+      metadata: { via: 'oidc' },
+    });
+    return completeLogin(request, reply, outcome.user, 'telegram');
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/auth/telegram/oidc/config — datos publicos del flujo OIDC
+  // -------------------------------------------------------------------------
+  app.get('/telegram/oidc/config', async (_request, reply) => {
+    const { oidcConfig, telegramOidc } = await import('../services/telegram-oidc.service');
+    const config = oidcConfig();
+    return reply.send({
+      clientId: config.effectiveClientId,
+      configured: config.configured,
+      scopes: ['openid', 'profile', 'phone'],
+      endpoints: { issuer: telegramOidc.ISSUER, jwks: telegramOidc.JWKS_URL, authorization: telegramOidc.AUTH_ENDPOINT },
+    });
   });
 
   // -------------------------------------------------------------------------

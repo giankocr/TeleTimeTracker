@@ -46,6 +46,8 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
         bot: botInfo ? { id: botInfo.id, username: botInfo.username, name: botInfo.first_name } : null,
         webhook: webhook ?? null,
         publicUrl: env.PUBLIC_URL || null,
+        telegramLoginMode: getSetting(SETTING_KEYS.TELEGRAM_LOGIN_MODE, 'oidc'),
+        loginOidcConfigured: (await import('../services/telegram-oidc.service')).oidcConfig().configured,
         openaiConfigured: Boolean(getSetting(SETTING_KEYS.OPENAI_API_KEY) || env.OPENAI_API_KEY),
         groqConfigured: Boolean(getSetting(SETTING_KEYS.GROQ_API_KEY) || env.GROQ_API_KEY),
         // Proveedor efectivo de voz/NLU (Groq tiene prioridad si hay clave).

@@ -464,23 +464,33 @@ export interface LoginConfig {
   telegramEnabled: boolean;
   phoneOtpEnabled: boolean;
   /**
-   * 'oauth'  -> boton propio que abre oauth.telegram.org (no necesita /setdomain)
-   * 'widget' -> widget oficial de Telegram (requiere registrar el dominio en
-   *             BotFather con /setdomain y postea en form-urlencoded)
+   * 'oidc'   -> libreria oficial telegram-login.js (popup) + id_token JWT. RECOMENDADO
+   * 'widget' -> widget iframe legacy (HMAC del bot token + /setdomain). En desuso
+   * 'oauth'  -> redireccion a oauth.telegram.org sin OIDC. En desuso
    */
-  telegramLoginMode: 'oauth' | 'widget';
+  telegramLoginMode: 'oidc' | 'widget' | 'oauth';
+  /** Client ID de BotFather (Login Widget) para la libreria OIDC. */
+  loginClientId: string | null;
+  /** true si hay Client ID y Secret: el flujo manual tambien esta disponible. */
+  oidcConfigured: boolean;
 }
 
 export async function loginConfig(): Promise<LoginConfig> {
   const botId = getBotId();
-  const rawMode = getSetting(SETTING_KEYS.TELEGRAM_LOGIN_MODE, 'oauth');
+  const rawMode = getSetting(SETTING_KEYS.TELEGRAM_LOGIN_MODE, 'oidc');
+  const mode: LoginConfig['telegramLoginMode'] =
+    rawMode === 'widget' ? 'widget' : rawMode === 'oauth' ? 'oauth' : 'oidc';
+  const { oidcConfig } = await import('./telegram-oidc.service');
+  const oidc = oidcConfig();
   return {
     companyName: getSetting(SETTING_KEYS.COMPANY_NAME, 'TeleTimeTracker'),
     botId,
     botUsername: botId ? await getBotUsername() : null,
     telegramEnabled: Boolean(botId),
     phoneOtpEnabled: Boolean(botId),
-    telegramLoginMode: rawMode === 'widget' ? 'widget' : 'oauth',
+    telegramLoginMode: mode,
+    loginClientId: oidc.effectiveClientId,
+    oidcConfigured: oidc.configured,
   };
 }
 

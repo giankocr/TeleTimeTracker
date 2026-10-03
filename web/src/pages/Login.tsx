@@ -24,8 +24,14 @@ interface LoginConfig {
     enabled: boolean;
     botId: string | null;
     botUsername: string | null;
-    /** 'oauth' = botón propio (no necesita /setdomain) · 'widget' = widget oficial */
-    loginMode: 'oauth' | 'widget';
+    /**
+     * 'oidc'   = librería oficial telegram-login.js (popup + id_token)  [recomendado]
+     * 'widget' = widget iframe legacy (HMAC + /setdomain)  [en desuso]
+     * 'oauth'  = redirección oauth.telegram.org sin OIDC  [en desuso]
+     */
+    loginMode: 'oidc' | 'widget' | 'oauth';
+    clientId: string | null;
+    oidcConfigured: boolean;
   };
   phoneOtp: { enabled: boolean };
 }
@@ -144,7 +150,83 @@ export default function LoginPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config?.telegram.loginMode]);
 
-  // Inyecta el script oficial del widget (Telegram sustituye el div por el botón).
+  // --- Modo OIDC: librería oficial telegram-login.js (popup + id_token) ---
+  useEffect(() => {
+    if (config?.telegram.loginMode !== 'oidc') return;
+    const clientId = config.telegram.clientId;
+    const container = widgetRef.current;
+    if (!clientId || !container) return;
+
+    let cancelled = false;
+    const SRC = 'https://telegram.org/js/telegram-login.js?5';
+
+    const onAuth = async (result: { id_token?: string; user?: unknown; error?: string }) => {
+      if (result?.error) {
+        setError(result.error);
+        return;
+      }
+      if (!result?.id_token) {
+        setError('Telegram no devolvió el id_token. Intenta de nuevo.');
+        return;
+      }
+      setBusy(true);
+      try {
+        const data = await api.post<{ accessToken: string; refreshToken: string; user: SessionUser }>(
+          '/auth/telegram/oidc',
+          { idToken: result.id_token },
+        );
+        await finishLogin(data);
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    const init = () => {
+      const lib = (window as any).Telegram?.Login;
+      if (!lib) {
+        setError('No se pudo cargar la librería de Telegram. Revisa tu conexión o usa «Teléfono + código».');
+        return;
+      }
+      // init() registra el callback; el botón se dibuja dentro del contenedor.
+      lib.init(
+        { client_id: Number(clientId), scope: ['profile', 'phone'], lang: 'es' },
+        onAuth,
+      );
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-block';
+      btn.style.cssText = 'background:#2AABEE;border-color:transparent;color:#fff';
+      btn.innerHTML = '<span style="display:inline-flex;align-items:center;gap:8px">Entrar con Telegram</span>';
+      btn.onclick = () => lib.open(onAuth);
+      container.replaceChildren(btn);
+    };
+
+    const existing = document.querySelector<HTMLScriptElement>(`script[src^="https://telegram.org/js/telegram-login.js"]`);
+    if (existing) {
+      if ((window as any).Telegram?.Login) init();
+      else existing.addEventListener('load', init, { once: true });
+    } else {
+      const script = document.createElement('script');
+      script.src = SRC;
+      script.async = true;
+      script.addEventListener('load', init, { once: true });
+      script.addEventListener('error', () =>
+        setError('No se pudo cargar telegram-login.js. Puedes entrar con «Teléfono + código».'),
+      );
+      document.head.appendChild(script);
+    }
+
+    return () => {
+      cancelled = true;
+      void cancelled;
+      container.replaceChildren();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config?.telegram.loginMode, config?.telegram.clientId]);
+
+  // Inyecta el script del widget iframe legacy (Telegram sustituye el div por el botón).
   useEffect(() => {
     const telegram = config?.telegram;
     if (telegram?.loginMode !== 'widget' || !telegram.botUsername || !widgetRef.current) return;
@@ -295,7 +377,17 @@ export default function LoginPage() {
                   Entra con tu cuenta de Telegram ya vinculada. No necesitas recordar contraseña.
                 </p>
 
-                {config?.telegram.loginMode === 'widget' ? (
+                {config?.telegram.loginMode === 'oidc' ? (
+                  <>
+                    {/* Librería oficial (OIDC): popup + id_token verificado con JWKS. */}
+                    <div ref={widgetRef} style={{ display: 'flex', justifyContent: 'center', minHeight: 48 }} />
+                    <p className="tiny muted-2" style={{ textAlign: 'center' }}>
+                      {config.telegram.clientId
+                        ? 'Registra tu dominio en BotFather → Login Widget para que Telegram acepte el retorno.'
+                        : 'Falta el Client ID de Telegram Login (BotFather → Login Widget) en Configuración.'}
+                    </p>
+                  </>
+                ) : config?.telegram.loginMode === 'widget' ? (
                   <>
                     {/* Widget oficial de Telegram: requiere el dominio registrado en BotFather (/setdomain). */}
                     <div ref={widgetRef} style={{ display: 'flex', justifyContent: 'center', minHeight: 48 }} />

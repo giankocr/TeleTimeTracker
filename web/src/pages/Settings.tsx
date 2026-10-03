@@ -35,7 +35,13 @@ const SECTIONS: Array<{ title: string; hint?: string; keys: string[] }> = [
   {
     title: 'Telegram',
     hint: 'Si cambias el token, vuelve a registrar el webhook.',
-    keys: ['telegram.bot_token', 'telegram.webhook_secret', 'telegram.login_mode'],
+    keys: [
+      'telegram.bot_token',
+      'telegram.webhook_secret',
+      'telegram.login_mode',
+      'telegram.login_client_id',
+      'telegram.login_client_secret',
+    ],
   },
   {
     title: 'GitHub',
@@ -64,6 +70,8 @@ const LABELS: Record<string, string> = {
   'telegram.bot_token': 'TELEGRAM_BOT_TOKEN',
   'telegram.webhook_secret': 'TELEGRAM_WEBHOOK_SECRET',
   'telegram.login_mode': 'Botón de acceso con Telegram',
+  'telegram.login_client_id': 'TELEGRAM_LOGIN_CLIENT_ID (BotFather → Login Widget)',
+  'telegram.login_client_secret': 'TELEGRAM_LOGIN_CLIENT_SECRET (BotFather → Login Widget)',
   'github.token': 'GITHUB_TOKEN',
   'github.enrich_enabled': 'Adjuntar commits/PRs al cerrar tareas',
   'bot.welcome_message': 'Mensaje de bienvenida',
@@ -394,8 +402,9 @@ export default function SettingsPage() {
                         disabled={!canWrite}
                         onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
                       >
-                        <option value="oauth">Botón propio (OAuth) — recomendado, no necesita /setdomain</option>
-                        <option value="widget">Widget oficial de Telegram — requiere registrar el dominio en BotFather</option>
+                        <option value="oidc">Librería oficial de Telegram (OIDC) — recomendado</option>
+                        <option value="oauth">Botón propio (redirección OAuth) — en desuso por Telegram</option>
+                        <option value="widget">Widget iframe antiguo (HMAC + /setdomain) — en desuso por Telegram</option>
                       </select>
                     ) : isBool ? (
                       <label className="checkbox">
@@ -455,7 +464,14 @@ export default function SettingsPage() {
         >
           <div className="stack-sm">
             <div className="row-between">
-              <span className="small">Bot para el login</span>
+              <span className="small">Modo del botón</span>
+              <Badge kind={integration?.telegramLoginMode === 'oidc' ? 'badge-success' : 'badge-warning'}>
+                {integration?.telegramLoginMode ?? 'oidc'}
+                {integration?.telegramLoginMode === 'oidc' ? ' (OIDC)' : ' (en desuso)'}
+              </Badge>
+            </div>
+            <div className="row-between">
+              <span className="small">Bot</span>
               {integration?.bot?.username ? (
                 <Badge kind="badge-success">@{integration.bot.username}</Badge>
               ) : (
@@ -463,7 +479,15 @@ export default function SettingsPage() {
               )}
             </div>
             <div className="row-between">
-              <span className="small">Origen autorizado (el navegador del panel)</span>
+              <span className="small">Client ID / Secret de Login Widget</span>
+              {integration?.loginOidcConfigured ? (
+                <Badge kind="badge-success">configurados</Badge>
+              ) : (
+                <Badge kind="badge-warning">pendientes</Badge>
+              )}
+            </div>
+            <div className="row-between">
+              <span className="small">URL que debes registrar en BotFather</span>
               <span className="mono tiny muted">{window.location.origin}</span>
             </div>
             <div className="row-between">
@@ -478,50 +502,36 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <Alert kind={integration?.telegramLoginMode === 'widget' ? 'warning' : 'info'}>
-            {integration?.telegramLoginMode === 'widget' ? (
-              <>
-                <b>Modo widget activo: hace falta registrar el dominio en BotFather</b> o el botón no aparecerá.
-                <ol style={{ margin: '8px 0 0', paddingLeft: 18, lineHeight: 1.8 }}>
-                  <li>
-                    Abre <span className="mono">@BotFather</span> → <span className="mono">/mybots</span> → tu bot →{' '}
-                    <b>Bot Settings → Domain</b> → <span className="mono">/setdomain</span>
-                  </li>
-                  <li>
-                    Escribe <b>exactamente</b> (sin <span className="mono">https://</span> y sin barra final):{' '}
-                    <span className="mono">{(integration?.publicUrl ?? window.location.origin).replace(/^https?:\/\//, '').replace(/\/$/, '')}</span>
-                  </li>
-                  <li>Recarga esta pantalla de login: el widget aparecerá automáticamente.</li>
-                </ol>
-              </>
-            ) : (
-              <>
-                <b>No hace falta configurar /setdomain en BotFather</b> para este flujo: el botón usa la autorización
-                oficial de Telegram y valida el origen en el servidor. Solo necesitas:
-                <ol style={{ margin: '8px 0 0', paddingLeft: 18, lineHeight: 1.8 }}>
-                  <li>
-                    Guardar aquí el <b>token del bot</b> (de @BotFather).
-                  </li>
-                  <li>
-                    Que cada usuario <b>vincule su Telegram</b>: abre el bot, toca <span className="mono">/start</span> y
-                    pulsa <b>📱 Compartir mi número</b> (o usa el código de vinculación del panel).
-                  </li>
-                  <li>
-                    Que su <b>teléfono</b> esté registrado en su usuario (columna «Teléfono» en Usuarios) para poder
-                    entrar con «Teléfono + código».
-                  </li>
-                </ol>
-                <div style={{ marginTop: 6 }}>
-                  En producción el panel debe servirse por <b>HTTPS</b> para que Telegram acepte el retorno.
-                </div>
-              </>
-            )}
+          <Alert kind="info">
+            <b>Cómo activar el login con Telegram (flujo OIDC, el vigente):</b>
+            <ol style={{ margin: '8px 0 0', paddingLeft: 18, lineHeight: 1.8 }}>
+              <li>
+                Abre <span className="mono">@BotFather</span> → <span className="mono">/mybots</span> → tu bot →{' '}
+                <b>Login Widget</b>.
+              </li>
+              <li>
+                Añade como <b>Allowed URL</b> exactamente: <span className="mono">{window.location.origin}</span>
+              </li>
+              <li>
+                Copia el <b>Client ID</b> y el <b>Client Secret</b> que muestra BotFather y pégalos arriba.
+              </li>
+              <li>
+                Que cada persona vincule su Telegram: abre el bot, toca <span className="mono">/start</span> y pulsa{' '}
+                <b>📱 Compartir mi número</b>.
+              </li>
+            </ol>
+            <div style={{ marginTop: 6 }}>
+              Requiere <b>HTTPS</b> en el dominio. Los modos <i>oauth</i> y <i>widget</i> siguen funcionando pero
+              Telegram los considera obsoletos.
+            </div>
           </Alert>
 
           <p className="tiny muted-2">
-            Seguridad: el servidor recomputa la firma HMAC-SHA256 con el token del bot, rechaza autorizaciones de más
-            de 1 hora, compara en tiempo constante y exige que la cuenta esté vinculada y activa. Los códigos OTP duran
-            10 minutos, son de un solo uso, admiten 5 intentos y se guardan cifrados (SHA-256).
+            Seguridad: el <span className="mono">id_token</span> es un JWT firmado con <b>RS256</b> por Telegram; el
+            servidor verifica la firma contra el <b>JWKS</b> oficial y comprueba <span className="mono">iss</span>,{' '}
+            <span className="mono">aud</span> (tu Client ID) y <span className="mono">exp</span>, con soporte de{' '}
+            <span className="mono">nonce</span> contra replay. El Client Secret solo se usa en el flujo manual por
+            código y nunca se expone al navegador.
           </p>
         </Card>
       ) : null}

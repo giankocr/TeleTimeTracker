@@ -217,36 +217,37 @@ Si lo dejas vacío, el webhook acepta cualquier petición firmada: funciona, per
 - Si escribes un valor nuevo, se reemplaza (se guarda cifrado con AES-256-GCM).
 - Si **borras el campo y guardas**, se elimina el valor guardado y el sistema vuelve a usar el de la variable de entorno (`.env`). Es la forma de deshacer un valor equivocado.
 
-### Botón de Telegram: dos modos (`telegram.login_mode`)
+### Login con Telegram: usa el flujo OIDC (`telegram.login_mode = oidc`)
 
-En *Configuración → Telegram → «Botón de acceso con Telegram»* se elige cómo entra la gente con Telegram:
+Telegram **archivó el widget iframe antiguo** (`telegram-widget.js` con HMAC del bot token y `/setdomain`) y la redirección `oauth.telegram.org/auth` sin OIDC. Lo vigente es la **Login library + OpenID Connect**: ver [core.telegram.org/bots/telegram-login](https://core.telegram.org/bots/telegram-login).
 
-| Modo | Qué usa | Requisito | Cuándo elegirlo |
-|---|---|---|---|
-| **`oauth`** (por defecto) | Botón propio → `oauth.telegram.org/auth` con el `bot_id` público | Solo el token del bot | Recomendado: funciona sin tocar BotFather y también dentro del navegador de Telegram |
-| **`widget`** | **Widget oficial** de Telegram (`telegram-widget.js`) | **Registrar el dominio en BotFather** con `/setdomain` | Si prefieres el botón nativo de Telegram con tu foto de usuario |
+| Modo | Estado | Qué usa |
+|---|---|---|
+| **`oidc`** (por defecto) | ✅ Vigente | Librería `telegram-login.js` (popup) → `id_token` JWT firmado con **RS256**, verificado contra el **JWKS** de Telegram |
+| `oauth` | ⚠️ En desuso | Redirección a `oauth.telegram.org/auth` con `bot_id` |
+| `widget` | ⚠️ En desuso | Widget iframe legacy (HMAC-SHA256 del bot token + `/setdomain`) |
 
-**Cómo activar el modo widget:**
+**Configuración (una sola vez):**
 
-1. En *Configuración* cambia el ajuste a **Widget oficial de Telegram** (se aplica al instante, sin rebuild).
-2. Abre **@BotFather** → `/mybots` → tu bot → **Bot Settings → Domain** → `/setdomain`.
-3. Escribe el dominio **exacto, sin `https://` y sin barra final**:
-   ```
-   timetracker.gianko.com
-   ```
-   Telegram exige HTTPS (solo admite `http` para `localhost`). Si el dominio no está registrado, el widget **no se renderiza** y la pantalla de login lo avisa.
-4. Recarga la pantalla de login: el botón nativo aparece automáticamente.
+1. Abre **@BotFather** → `/mybots` → tu bot → **Login Widget**.
+2. Añade como **Allowed URL** el origen exacto de tu panel, p. ej. `https://timetracker.gianko.com` (y `http://localhost:8080` si pruebas en local).
+3. Copia el **Client ID** y el **Client Secret** que muestra BotFather y pégalos en *Configuración → Telegram* (`telegram.login_client_id` y `telegram.login_client_secret`).
+4. Asegúrate de que el panel se sirve por **HTTPS**.
+5. Cada usuario debe haber vinculado su cuenta: abre el bot, `/start` y **📱 Compartir mi número**.
 
-> El paso de `/setdomain` **no se puede automatizar**: la Bot API no expone esa configuración, solo se puede hacer desde el chat con BotFather. Por eso el modo `oauth` es el que viene por defecto.
+**Cómo se valida el `id_token`** (`server/src/services/telegram-oidc.service.ts`):
 
-**Cómo funcionan por dentro (ambos modos):**
+1. Se descarga y cachea el **JWKS** (`https://oauth.telegram.org/.well-known/jwks.json`, 10 min de TTL) y se localiza la clave por `kid` (con refresco automático si rotó).
+2. Se verifica la **firma RS256** con `jsonwebtoken` y se comprueban `iss` (`https://oauth.telegram.org`), `aud` (tu **Client ID**) y `exp`, con 60 s de tolerancia de reloj.
+3. Se rechazan `alg: none` y algoritmos distintos de RS256; se admite `nonce` para evitar replay.
+4. Se busca el usuario por el claim `id` (id de Telegram) y se exige cuenta **vinculada y activa**.
+5. Si el usuario autorizó el scope `phone`, el `phone_number` del token se guarda normalizado en su perfil.
 
-- **OAuth**: el navegador abre Telegram, que devuelve al usuario a `/login/telegram/callback` con los datos firmados en el hash (`#tgAuthResult`), y el cliente los reenvía a `POST /api/auth/telegram/oauth`.
-- **Widget**: el script oficial envía un **POST `application/x-www-form-urlencoded`** a `data-auth-url` (`/api/auth/telegram/widget`). Ese endpoint responde **HTML** (no JSON) con la sesión ya emitida y avisa al panel por `postMessage`; el panel valida el origen del mensaje antes de aceptarlo. También admite `GET` con los parámetros en la query.
+**Detalle crítico de implementación:** la librería de Telegram completa el login comunicándose con una **ventana popup**. Si el panel enviara `Cross-Origin-Opener-Policy: same-origin`, esa comunicación se bloquearía y el login fallaría; por eso el servidor envía `same-origin-allow-popups` (ver `server/src/app.ts`).
 
-En los dos casos la verificación es la misma y ocurre **solo en el servidor**: HMAC-SHA256 con `SHA256(bot_token)`, comparación en tiempo constante, rechazo de autorizaciones de más de 1 hora y exigencia de cuenta vinculada y activa.
+**Flujo manual OIDC (opcional):** también está implementado el Authorization Code Flow con **PKCE S256** (`createPkce`, `buildAuthorizationUrl`, `exchangeCodeForTokens`), útil si prefieres un broker OIDC o un cliente nativo. En ese caso el `Client Secret` se usa solo en el servidor (Basic Auth contra `/token`) y nunca se expone al navegador.
 
-### Acceso al panel con Telegram (tres vías)
+### Acceso al panel con Telegram (tres vías)### Acceso al panel con Telegram (tres vías)
 
 Igual que en NosotrosConstruimos, la pantalla de login ofrece **tres formas de entrar**:
 
@@ -501,7 +502,9 @@ docker compose up -d --build
 |---|---|---|
 | `GET` | `/api/auth/config` | Config pública del login (empresa, `bot_id`, disponibilidad de Telegram y de OTP) |
 | `POST` | `/api/auth/telegram/oauth` | Login con Telegram OAuth (acepta los campos o el hash `#tgAuthResult`) |
-| `POST`/`GET` | `/api/auth/telegram/widget` | Endpoint del widget oficial: recibe form-urlencoded y responde HTML con la sesión |
+| `POST` | `/api/auth/telegram/oidc` | **Login vigente**: recibe el `id_token` de Telegram y lo valida contra el JWKS |
+| `GET` | `/api/auth/telegram/oidc/config` | Datos públicos del flujo OIDC (Client ID, scopes, endpoints) |
+| `POST`/`GET` | `/api/auth/telegram/widget` | *(en desuso)* widget iframe legacy: form-urlencoded → HTML con sesión |
 | `POST` | `/api/auth/phone/request` · `/phone/verify` | Acceso con teléfono + código enviado por el bot |
 | `GET/PATCH/DELETE` | `/api/users/bot-contacts` | Solicitudes de acceso llegadas desde el bot |
 | `GET` | `/api/auth/telegram/login` | *(compatibilidad)* Login Widget clásico |
@@ -569,6 +572,8 @@ Consulta `.env.example` para la lista completa y comentada. Resumen:
 | `TELEGRAM_MODE` | `webhook` | `webhook` · `polling` · `off` |
 | `TELEGRAM_WEBHOOK_SECRET` | — | Validación del webhook |
 | `PUBLIC_URL` | — | Dominio público (sin barra final) |
+| `TELEGRAM_LOGIN_CLIENT_ID` / `_SECRET` | — | Client ID y Secret de BotFather → Login Widget (login web OIDC) |
+| `TELEGRAM_LOGIN_MODE` | `oidc` | `oidc` (vigente) · `oauth` / `widget` (en desuso) |
 | `GROQ_API_KEY` | — | **Recomendado** para los audios: transcripción + NLU |
 | `GROQ_WHISPER_MODEL` / `GROQ_LLM_MODEL` | `whisper-large-v3` / `llama-3.1-8b-instant` | Modelos de Groq |
 | `OPENAI_API_KEY` | — | Alternativa (Whisper + NLU) |
@@ -591,6 +596,7 @@ El proyecto se validó de extremo a extremo:
 - **Nota de voz**: descarga del audio → transcripción → NLU → apertura y cierre del registro con proyecto, cliente y tipo de tarea correctos.
 - **Groq**: cliente apuntando a `https://api.groq.com/openai/v1` con modelo `whisper-large-v3` (verificado) y NLU con `llama-3.1-8b-instant`; la cadena completa de nota de voz crea el registro correcto. Clave inválida → `401 Invalid API Key` detectado por la prueba de claves del panel.
 - **Acceso con Telegram**: firma válida → JWT + RBAC; firma manipulada, autorización de 2 h y Telegram sin vincular → rechazados (401/403) y auditados. Formatos de hash `#tgAuthResult` y campos directos verificados.
-- **Widget oficial**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
+- **Widget oficial (legacy)**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
+- **Login OIDC (vigente)**: `id_token` válido → sesión y RBAC; firma ajena, `aud` o `iss` incorrectos, token expirado y `alg: none` → rechazados con el código de error correspondiente; `nonce` verificado; el `phone_number` del token se guarda en el perfil; cabecera `Cross-Origin-Opener-Policy: same-origin-allow-popups` presente (sin ella el popup de Telegram no comunica).
 - **Acceso con teléfono + OTP**: teléfono no registrado (404), código incorrecto (401), anti-spam de 60 s (429), código correcto (200 con sesión) y reutilización del mismo código (401).
 - **Vinculación desde el bot**: compartir el número sin cuenta → solicitud PENDING visible para el admin; aprobación → cuenta creada con rol y Telegram vinculado; segundo intento → vinculación automática; contacto ajeno → rechazado.

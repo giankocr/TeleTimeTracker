@@ -29,8 +29,14 @@ export const SETTING_KEYS = {
   WORK_END: 'work.default_end',
   TIMEZONE: 'work.default_timezone',
   COMPANY_NAME: 'ui.company_name',
-  /** 'oauth' (boton propio, no necesita /setdomain) o 'widget' (widget oficial). */
+  /**
+   * 'oidc'  -> libreria oficial telegram-login.js (popup) + id_token  [RECOMENDADO]
+   * 'widget'-> widget iframe legacy (HMAC + /setdomain)  [en desuso]
+   * 'oauth' -> redireccion oauth.telegram.org sin OIDC  [en desuso]
+   */
   TELEGRAM_LOGIN_MODE: 'telegram.login_mode',
+  TELEGRAM_LOGIN_CLIENT_ID: 'telegram.login_client_id',
+  TELEGRAM_LOGIN_CLIENT_SECRET: 'telegram.login_client_secret',
   WELCOME_MESSAGE: 'bot.welcome_message',
 } as const;
 
@@ -39,6 +45,7 @@ export type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];
 const SECRET_KEYS: string[] = [
   SETTING_KEYS.TELEGRAM_BOT_TOKEN,
   SETTING_KEYS.TELEGRAM_WEBHOOK_SECRET,
+  SETTING_KEYS.TELEGRAM_LOGIN_CLIENT_SECRET,
   SETTING_KEYS.OPENAI_API_KEY,
   SETTING_KEYS.GROQ_API_KEY,
   SETTING_KEYS.GITHUB_TOKEN,
@@ -59,7 +66,7 @@ const DEFAULTS: Record<string, string> = {
   [SETTING_KEYS.WORK_END]: '18:00',
   [SETTING_KEYS.TIMEZONE]: env.DEFAULT_TIMEZONE,
   [SETTING_KEYS.COMPANY_NAME]: 'TeleTimeTracker',
-  [SETTING_KEYS.TELEGRAM_LOGIN_MODE]: 'oauth',
+  [SETTING_KEYS.TELEGRAM_LOGIN_MODE]: 'oidc',
   [SETTING_KEYS.WELCOME_MESSAGE]:
     'Hola {name}! Envia una nota de voz o escribe que estas haciendo y empiezo a cronometrar.',
 };
