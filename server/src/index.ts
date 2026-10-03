@@ -140,9 +140,28 @@ async function main(): Promise<void> {
       applyBotTokenFromSettings(telegramToken());
 
       // Menu de comandos de Telegram (aparece al escribir «/» en el chat).
-      const { publishBotCommands } = await import('./bot/commands');
+      const { publishBotCommands, publishBotCommandsForChat } = await import('./bot/commands');
       const menu = await publishBotCommands();
-      console.log(menu.ok ? '📋 Menú de comandos publicado en Telegram' : `⚠  No se pudo publicar el menú: ${menu.error}`);
+      console.log(menu.ok ? '📋 Menú de comandos publicado (alcance por defecto)' : `⚠  No se pudo publicar el menú: ${menu.error}`);
+
+      // Además, por cada chat vinculado: si un chat tenia un alcance propio (o el
+      // menú quedo cacheado), el alcance por defecto no se aplica ahi.
+      try {
+        const { prisma: db } = await import('./db/prisma');
+        const vinculados = await db.user.findMany({
+          where: { isActive: true, telegramId: { not: null } },
+          select: { telegramId: true, fullName: true },
+        });
+        let publicados = 0;
+        for (const u of vinculados) {
+          const r = await publishBotCommandsForChat(u.telegramId!);
+          if (r.ok) publicados++;
+          else console.warn(`   ⚠ No se pudo publicar el menú para ${u.fullName}: ${r.error}`);
+        }
+        if (vinculados.length) console.log(`📋 Menú publicado también para ${publicados}/${vinculados.length} chat(s) vinculado(s)`);
+      } catch (err) {
+        console.warn('   ⚠ No se pudo publicar el menú por chat:', (err as Error).message);
+      }
 
       if (env.TELEGRAM_MODE === 'webhook') {
         if (env.PUBLIC_URL) {

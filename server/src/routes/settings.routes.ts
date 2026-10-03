@@ -193,11 +193,42 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
   // POST /api/settings/telegram/commands — publica el menu de comandos
   // -------------------------------------------------------------------------
   app.post('/telegram/commands', { preHandler: [requirePermission(PERMISSIONS.BOT_ADMIN)] }, async (request, reply) => {
-    const { publishBotCommands, BOT_COMMANDS } = await import('../bot/commands');
+    const { publishBotCommands, publishBotCommandsForChat, commandsStatus, BOT_COMMANDS } = await import('../bot/commands');
     const result = await publishBotCommands();
-    await audit(request, { action: 'settings.telegram_publish_commands', metadata: { ok: result.ok } });
-    if (!result.ok) return reply.code(400).send({ ok: false, error: result.error });
-    return reply.send({ ok: true, commands: BOT_COMMANDS, message: 'Menú de comandos actualizado en Telegram.' });
+    if (!result.ok) {
+      await audit(request, { action: 'settings.telegram_publish_commands', metadata: { ok: false, error: result.error } });
+      return reply.code(400).send({ ok: false, error: result.error });
+    }
+
+    // Tambien por chat: el alcance por defecto no se aplica donde ya habia uno.
+    const vinculados = await prisma.user.findMany({
+      where: { isActive: true, telegramId: { not: null } },
+      select: { telegramId: true, fullName: true },
+    });
+    let porChat = 0;
+    for (const u of vinculados) {
+      const r = await publishBotCommandsForChat(u.telegramId!);
+      if (r.ok) porChat++;
+    }
+
+    const status = await commandsStatus();
+    await audit(request, {
+      action: 'settings.telegram_publish_commands',
+      metadata: { ok: true, comandos: BOT_COMMANDS.length, chats: porChat },
+    });
+
+    return reply.send({
+      ok: true,
+      commands: BOT_COMMANDS,
+      registered: status.defaultCount,
+      chats: { total: vinculados.length, updated: porChat },
+      message:
+        `Menú actualizado: ${status.defaultCount} comandos. ` +
+        (vinculados.length
+          ? `Aplicado también a ${porChat}/${vinculados.length} chat(s) vinculado(s). `
+          : 'Aún no hay usuarios con Telegram vinculado. ') +
+        'Si no lo ves en el chat, cierra y reabre la conversación con el bot (Telegram cachea el menú).',
+    });
   });
 
   // -------------------------------------------------------------------------

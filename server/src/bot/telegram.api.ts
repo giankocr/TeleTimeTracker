@@ -185,9 +185,18 @@ export const answerCallbackQuery = (callbackQueryId: string, text?: string, show
     show_alert: showAlert,
   });
 
+export interface BotCommandScope {
+  type: 'default' | 'all_private_chats' | 'all_group_chats' | 'chat' | 'chat_administrators';
+  chat_id?: string | number;
+}
+
 export const setMyCommands = (
   commands: Array<{ command: string; description: string }>,
-) => call<boolean>('setMyCommands', { commands });
+  scope?: BotCommandScope,
+) => call<boolean>('setMyCommands', { commands, ...(scope ? { scope } : {}) });
+
+export const getMyCommands = (scope?: BotCommandScope) =>
+  call<Array<{ command: string; description: string }>>('getMyCommands', scope ? { scope } : {});
 
 export const sendChatAction = (chatId: string | number, action = 'typing') =>
   call<boolean>('sendChatAction', { chat_id: chatId, action }).catch(() => false);

@@ -31,16 +31,47 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: 'ayuda', description: '❓ Ayuda y ejemplos' },
 ];
 
+const asPayload = () => BOT_COMMANDS.map((c) => ({ command: c.command, description: c.description }));
+
 /**
- * Publica el menu de comandos en Telegram.
- * Si cambia el token del bot hay que volver a llamarlo (se hace desde el panel).
+ * Publica el menu de comandos en Telegram (alcance por defecto).
+ *
+ * El menu de Telegram se cachea en el cliente: si el chat con el bot ya estaba
+ * abierto antes de registrarlo, hay que reabrir el chat o reiniciar la app para
+ * que aparezca el boton «/». Ademas, si existe un alcance especifico para un
+ * chat, este TIENE PRIORIDAD sobre el alcance por defecto.
  */
 export async function publishBotCommands(): Promise<{ ok: boolean; error?: string }> {
   try {
-    await setMyCommands(BOT_COMMANDS.map((c) => ({ command: c.command, description: c.description })));
+    await setMyCommands(asPayload());
     return { ok: true };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
+  }
+}
+
+/**
+ * Publica el menu para un chat concreto (BotCommandScopeChat).
+ * Se usa con cada usuario vinculado: así el menú aparece aunque el alcance por
+ * defecto se hubiera quedado cacheado en ese chat.
+ */
+export async function publishBotCommandsForChat(chatId: string | number): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await setMyCommands(asPayload(), { type: 'chat', chat_id: chatId });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
+/** Comprueba que el bot tenga el menu registrado en el alcance por defecto. */
+export async function commandsStatus(): Promise<{ defaultCount: number; error?: string }> {
+  try {
+    const { getMyCommands } = await import('./telegram.api');
+    const list = await getMyCommands();
+    return { defaultCount: list.length };
+  } catch (err) {
+    return { defaultCount: 0, error: (err as Error).message };
   }
 }
 
