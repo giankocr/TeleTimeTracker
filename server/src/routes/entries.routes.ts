@@ -228,9 +228,18 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
     }
     if (endedAt <= startedAt) return reply.code(400).send({ error: 'La fecha de fin debe ser posterior al inicio' });
 
-    const project = d.projectId
-      ? await prisma.clientProject.findUnique({ where: { id: d.projectId }, select: { id: true, clientId: true } })
-      : null;
+    let project: { id: string; clientId: string } | null = null;
+    if (d.projectId) {
+      project = await prisma.clientProject.findUnique({
+        where: { id: d.projectId },
+        select: { id: true, clientId: true },
+      });
+      if (!project) return reply.code(400).send({ error: 'El proyecto indicado no existe', code: 'PROJECT_NOT_FOUND' });
+    }
+    if (d.taskTypeId) {
+      const tipo = await prisma.taskType.findUnique({ where: { id: d.taskTypeId }, select: { id: true } });
+      if (!tipo) return reply.code(400).send({ error: 'El tipo de tarea indicado no existe', code: 'TASKTYPE_NOT_FOUND' });
+    }
 
     const entry = await prisma.timeEntry.create({
       data: {
@@ -290,12 +299,26 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
     if (endedAt && Number.isNaN(endedAt.getTime())) return reply.code(400).send({ error: 'Fecha de fin invalida' });
     if (endedAt && endedAt <= startedAt) return reply.code(400).send({ error: 'La fecha de fin debe ser posterior al inicio' });
 
-    const project =
-      d.projectId !== undefined
-        ? d.projectId
-          ? await prisma.clientProject.findUnique({ where: { id: d.projectId }, select: { id: true, clientId: true } })
-          : null
-        : undefined;
+    // El proyecto y el tipo deben existir: antes, un id inexistente dejaba el
+    // registro sin proyecto (y sin cliente) en silencio, devolviendo 200.
+    let project: { id: string; clientId: string } | null | undefined;
+    if (d.projectId !== undefined) {
+      if (d.projectId) {
+        const encontrado = await prisma.clientProject.findUnique({
+          where: { id: d.projectId },
+          select: { id: true, clientId: true },
+        });
+        if (!encontrado) return reply.code(400).send({ error: 'El proyecto indicado no existe', code: 'PROJECT_NOT_FOUND' });
+        project = encontrado;
+      } else {
+        project = null;
+      }
+    }
+
+    if (d.taskTypeId) {
+      const tipo = await prisma.taskType.findUnique({ where: { id: d.taskTypeId }, select: { id: true } });
+      if (!tipo) return reply.code(400).send({ error: 'El tipo de tarea indicado no existe', code: 'TASKTYPE_NOT_FOUND' });
+    }
 
     const durationSec = endedAt
       ? Math.max(0, Math.floor((endedAt.getTime() - startedAt.getTime()) / 1000))

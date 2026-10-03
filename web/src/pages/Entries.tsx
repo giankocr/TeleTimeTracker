@@ -22,6 +22,7 @@ export default function EntriesPage() {
   const { push } = useToast();
   const { can } = useAuth();
   const canDelete = can('entries:delete');
+  const canWrite = can('entries:write');
   const [preset, setPreset] = useState('last7');
   const [status, setStatus] = useState('');
   const [search, setSearch] = useState('');
@@ -43,6 +44,19 @@ export default function EntriesPage() {
   // Confirmacion de borrado definitivo (irreversible).
   const [toDelete, setToDelete] = useState<any | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // Edicion de un registro existente (tarea, proyecto, cliente, tipo, horas...).
+  const [toEdit, setToEdit] = useState<any | null>(null);
+  const [editForm, setEditForm] = useState({
+    title: '',
+    description: '',
+    projectId: '',
+    taskTypeId: '',
+    startedAt: '',
+    endedAt: '',
+    billable: true,
+    status: 'FINISHED',
+  });
+  const [savingEdit, setSavingEdit] = useState(false);
   const [manual, setManual] = useState({ title: '', projectId: '', taskTypeId: '', startedAt: '', endedAt: '', description: '' });
   const [saving, setSaving] = useState(false);
 
@@ -116,6 +130,58 @@ export default function EntriesPage() {
       push((err as Error).message, 'error');
     } finally {
       setSaving(false);
+    }
+  };
+
+  /** Convierte una fecha ISO al formato que espera <input type="datetime-local">. */
+  const toLocalInput = (iso: string | null): string => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  /** Abre el editor con los datos actuales del registro. */
+  const openEdit = (entry: any) => {
+    setEditForm({
+      title: entry.title ?? '',
+      description: entry.description ?? '',
+      projectId: entry.projectId ?? '',
+      taskTypeId: entry.taskTypeId ?? '',
+      startedAt: toLocalInput(entry.startedAt),
+      endedAt: toLocalInput(entry.endedAt),
+      billable: Boolean(entry.billable),
+      status: entry.status,
+    });
+    setToEdit(entry);
+  };
+
+  /**
+   * Guarda los cambios. El proyecto manda sobre el cliente: al elegir otro
+   * proyecto, el backend reasigna tambien su cliente (asi el registro queda
+   * coherente con la jerarquia cliente -> proyecto).
+   */
+  const saveEdit = async () => {
+    if (!toEdit) return;
+    setSavingEdit(true);
+    try {
+      await api.patch(`/entries/${toEdit.id}`, {
+        title: editForm.title.trim() || undefined,
+        description: editForm.description || null,
+        projectId: editForm.projectId || null,
+        taskTypeId: editForm.taskTypeId || null,
+        ...(editForm.startedAt ? { startedAt: new Date(editForm.startedAt).toISOString() } : {}),
+        ...(editForm.endedAt ? { endedAt: new Date(editForm.endedAt).toISOString() } : {}),
+        billable: editForm.billable,
+        status: editForm.status,
+      });
+      push('Registro actualizado', 'success');
+      setToEdit(null);
+      await load();
+    } catch (err) {
+      push((err as Error).message, 'error');
+    } finally {
+      setSavingEdit(false);
     }
   };
 
@@ -337,24 +403,33 @@ export default function EntriesPage() {
                           ) : (
                             <span className="tiny muted-2">anulado</span>
                           )
-                        ) : canDelete ? (
+                        ) : (
                           <>
-                            <button
-                              className="btn btn-sm"
-                              onClick={() => void cancelEntry(e)}
-                              title="Anular: deja de contar horas pero se conserva"
-                            >
-                              Anular
-                            </button>
-                            <button
-                              className="btn btn-sm btn-danger"
-                              onClick={() => setToDelete(e)}
-                              title="Eliminar definitivamente"
-                            >
-                              🗑 Eliminar
-                            </button>
+                            {canWrite ? (
+                              <button className="btn btn-sm" onClick={() => openEdit(e)} title="Editar tarea, proyecto, cliente, horas y tipo">
+                                ✏️ Editar
+                              </button>
+                            ) : null}
+                            {canDelete ? (
+                              <>
+                                <button
+                                  className="btn btn-sm"
+                                  onClick={() => void cancelEntry(e)}
+                                  title="Anular: deja de contar horas pero se conserva"
+                                >
+                                  Anular
+                                </button>
+                                <button
+                                  className="btn btn-sm btn-danger"
+                                  onClick={() => setToDelete(e)}
+                                  title="Eliminar definitivamente"
+                                >
+                                  🗑 Eliminar
+                                </button>
+                              </>
+                            ) : null}
                           </>
-                        ) : null}
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -364,6 +439,150 @@ export default function EntriesPage() {
           </div>
         )}
       </Card>
+
+      {toEdit ? (
+        <Modal
+          title="Editar registro de tiempo"
+          onClose={() => setToEdit(null)}
+          wide
+          footer={
+            <>
+              <button className="btn btn-ghost" onClick={() => setToEdit(null)} disabled={savingEdit}>
+                Cancelar
+              </button>
+              <button className="btn btn-primary" onClick={() => void saveEdit()} disabled={savingEdit}>
+                {savingEdit ? 'Guardando…' : 'Guardar cambios'}
+              </button>
+            </>
+          }
+        >
+          <div className="card" style={{ padding: 12 }}>
+            <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
+              <span className="tiny muted-2">
+                {toEdit.userName} · {SOURCE_LABEL[toEdit.source] ?? toEdit.source} ·{' '}
+                {formatDateTime(toEdit.startedAt)}
+              </span>
+              <Badge kind={STATUS_BADGE[toEdit.status]}>{STATUS_LABEL[toEdit.status]}</Badge>
+              <span className="tiny muted-2">
+                duración actual: <b>{formatSeconds(toEdit.liveSeconds)}</b>
+              </span>
+            </div>
+          </div>
+
+          <Field label="Tarea (título)">
+            <input
+              className="input"
+              value={editForm.title}
+              onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+              placeholder="Maquetación del login"
+            />
+          </Field>
+
+          <div className="form-grid">
+            <Field label="Cliente / Proyecto" hint="Al cambiar el proyecto se ajusta también el cliente del registro.">
+              <select
+                className="select"
+                value={editForm.projectId}
+                onChange={(e) => setEditForm({ ...editForm, projectId: e.target.value })}
+              >
+                <option value="">Sin proyecto</option>
+                {clients.map((c) => {
+                  const delCliente = projects.filter((p) => p.clientId === c.id);
+                  if (!delCliente.length) return null;
+                  return (
+                    <optgroup key={c.id} label={c.name}>
+                      {delCliente.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+                {projects
+                  .filter((p) => !clients.some((c) => c.id === p.clientId))
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+              </select>
+            </Field>
+
+            <Field label="Tipo de tarea">
+              <select
+                className="select"
+                value={editForm.taskTypeId}
+                onChange={(e) => setEditForm({ ...editForm, taskTypeId: e.target.value })}
+              >
+                <option value="">Sin tipo</option>
+                {taskTypes.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Inicio">
+              <input
+                className="input"
+                type="datetime-local"
+                value={editForm.startedAt}
+                onChange={(e) => setEditForm({ ...editForm, startedAt: e.target.value })}
+              />
+            </Field>
+
+            <Field label="Fin" hint="Determina la duración. Vacío = en curso.">
+              <input
+                className="input"
+                type="datetime-local"
+                value={editForm.endedAt}
+                onChange={(e) => setEditForm({ ...editForm, endedAt: e.target.value })}
+              />
+            </Field>
+
+            <Field label="Estado">
+              <select
+                className="select"
+                value={editForm.status}
+                onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+              >
+                {Object.entries(STATUS_LABEL).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Facturable">
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={editForm.billable}
+                  onChange={(e) => setEditForm({ ...editForm, billable: e.target.checked })}
+                />
+                Cuenta como facturable
+              </label>
+            </Field>
+          </div>
+
+          <Field label="Detalle de lo realizado">
+            <textarea
+              className="textarea"
+              value={editForm.description}
+              onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+              placeholder="Qué se hizo, cambios, hallazgos…"
+            />
+          </Field>
+
+          <Alert kind="info">
+            La <b>duración</b> se recalcula al guardar a partir de inicio y fin (las pausas se descuentan). Un registro con
+             estado <b>en curso</b> no tiene fin: se le pone uno al finalizarlo.
+          </Alert>
+        </Modal>
+      ) : null}
 
       {toDelete ? (
         <Modal
