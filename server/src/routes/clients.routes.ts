@@ -100,15 +100,180 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
     return reply.send({ client });
   });
 
+  // -------------------------------------------------------------------------
+  // GET /api/clients/:id/impact — que se pierde (o se huerfaniza) al borrar
+  //
+  // Antes de un borrado definitivo conviene saber cuantas horas quedarian sin
+  // cliente/proyecto: al borrar, las claves foraneas se ponen a NULL y los
+  // reportes historicos perderian esa atribucion.
+  // -------------------------------------------------------------------------
+  app.get('/clients/:id/impact', { preHandler: [authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const client = await prisma.client.findUnique({ where: { id }, include: { projects: true } });
+    if (!client) return reply.code(404).send({ error: 'Cliente no encontrado' });
+
+    const [entries, hours] = await Promise.all([
+      prisma.timeEntry.count({ where: { clientId: id, status: { not: 'CANCELLED' } } }),
+      prisma.timeEntry.aggregate({
+        where: { clientId: id, status: { not: 'CANCELLED' } },
+        _sum: { durationSec: true },
+      }),
+    ]);
+
+    return reply.send({
+      client: { id: client.id, name: client.name, isActive: client.isActive },
+      projects: client.projects.map((p) => ({ id: p.id, name: p.name, isActive: p.isActive })),
+      entries,
+      hours: Math.round(((hours._sum.durationSec ?? 0) / 3600) * 100) / 100,
+      // Lo que se borraria en cascada si se usa ?hard=1
+      willDelete: {
+        projects: client.projects.length,
+        projectMembers: await prisma.projectMember.count({ where: { project: { clientId: id } } }),
+        clientMembers: await prisma.clientMember.count({ where: { clientId: id } }),
+      },
+      // Las horas NO se borran: se quedarian sin cliente/proyecto asignado.
+      willOrphan: { entries },
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/projects/:id/impact
+  // -------------------------------------------------------------------------
+  app.get('/projects/:id/impact', { preHandler: [authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const project = await prisma.clientProject.findUnique({ where: { id }, include: { client: true } });
+    if (!project) return reply.code(404).send({ error: 'Proyecto no encontrado' });
+
+    const [entries, hours, members] = await Promise.all([
+      prisma.timeEntry.count({ where: { projectId: id, status: { not: 'CANCELLED' } } }),
+      prisma.timeEntry.aggregate({
+        where: { projectId: id, status: { not: 'CANCELLED' } },
+        _sum: { durationSec: true },
+      }),
+      prisma.projectMember.count({ where: { projectId: id } }),
+    ]);
+
+    return reply.send({
+      project: {
+        id: project.id,
+        name: project.name,
+        isActive: project.isActive,
+        clientId: project.clientId,
+        clientName: project.client.name,
+      },
+      entries,
+      hours: Math.round(((hours._sum.durationSec ?? 0) / 3600) * 100) / 100,
+      willDelete: { members },
+      willOrphan: { entries },
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/projects/:id/reassign — mueve sus horas a otro proyecto
+  // Se usa antes de borrar para no dejar el historico huerfano.
+  // -------------------------------------------------------------------------
+  app.post('/projects/:id/reassign', { preHandler: [requirePermission(PERMISSIONS.PROJECTS_WRITE)] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = z.object({ toProjectId: z.string().min(1) }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Indica a qué proyecto mover los registros (toProjectId)' });
+    if (parsed.data.toProjectId === id) return reply.code(400).send({ error: 'El proyecto destino es el mismo' });
+
+    const [origen, destino] = await Promise.all([
+      prisma.clientProject.findUnique({ where: { id } }),
+      prisma.clientProject.findUnique({ where: { id: parsed.data.toProjectId } }),
+    ]);
+    if (!origen) return reply.code(404).send({ error: 'Proyecto de origen no encontrado' });
+    if (!destino) return reply.code(404).send({ error: 'Proyecto destino no encontrado' });
+
+    const updated = await prisma.timeEntry.updateMany({
+      where: { projectId: id },
+      data: { projectId: destino.id, clientId: destino.clientId },
+    });
+    await audit(request, {
+      action: 'project.reassign_entries',
+      entity: 'project',
+      entityId: id,
+      metadata: { to: destino.name, entries: updated.count },
+    });
+    return reply.send({
+      ok: true,
+      moved: updated.count,
+      to: { id: destino.id, name: destino.name },
+      message: `${updated.count} registro(s) movidos a «${destino.name}».`,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/clients/:id/reassign — mueve sus horas a otro cliente
+  // -------------------------------------------------------------------------
+  app.post('/clients/:id/reassign', { preHandler: [requirePermission(PERMISSIONS.CLIENTS_WRITE)] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = z.object({ toClientId: z.string().min(1) }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Indica a qué cliente mover los registros (toClientId)' });
+    if (parsed.data.toClientId === id) return reply.code(400).send({ error: 'El cliente destino es el mismo' });
+
+    const [origen, destino] = await Promise.all([
+      prisma.client.findUnique({ where: { id } }),
+      prisma.client.findUnique({ where: { id: parsed.data.toClientId } }),
+    ]);
+    if (!origen) return reply.code(404).send({ error: 'Cliente de origen no encontrado' });
+    if (!destino) return reply.code(404).send({ error: 'Cliente destino no encontrado' });
+
+    // Las horas pasan al cliente destino (los proyectos destino son suyos).
+    const updated = await prisma.timeEntry.updateMany({
+      where: { clientId: id },
+      data: { clientId: destino.id },
+    });
+    await audit(request, {
+      action: 'client.reassign_entries',
+      entity: 'client',
+      entityId: id,
+      metadata: { to: destino.name, entries: updated.count },
+    });
+    return reply.send({
+      ok: true,
+      moved: updated.count,
+      to: { id: destino.id, name: destino.name },
+      message: `${updated.count} registro(s) movidos a «${destino.name}».`,
+    });
+  });
+
   app.delete('/clients/:id', { preHandler: [requirePermission(PERMISSIONS.CLIENTS_DELETE)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const { hard } = request.query as { hard?: string };
     const entries = await prisma.timeEntry.count({ where: { clientId: id } });
 
     if (hard === '1') {
+      const { force } = request.query as { force?: string };
+      const proyectos = await prisma.clientProject.count({ where: { clientId: id } });
+      const huerfanas = await prisma.timeEntry.count({ where: { clientId: id } });
+
+      // Salvaguarda: borrar dejaria horas sin cliente (los reportes por cliente
+      // las perderian). Se exige confirmacion explicita o reasignarlas antes.
+      if (huerfanas > 0 && force !== '1') {
+        return reply.code(409).send({
+          error: `Este cliente tiene ${huerfanas} registro(s) de tiempo que quedarían sin cliente. Reasígnalos a otro cliente antes de borrar, o confirma con force=1.`,
+          code: 'WOULD_ORPHAN_ENTRIES',
+          entries: huerfanas,
+          hours: Math.round(((await prisma.timeEntry.aggregate({ where: { clientId: id, status: { not: 'CANCELLED' } }, _sum: { durationSec: true } }))._sum.durationSec ?? 0) / 36) / 100,
+        });
+      }
+
       await prisma.client.delete({ where: { id } });
-      await audit(request, { action: 'client.delete_hard', entity: 'client', entityId: id });
-      return reply.send({ ok: true, deleted: true });
+      await audit(request, {
+        action: 'client.delete_hard',
+        entity: 'client',
+        entityId: id,
+        metadata: { projects: proyectos, orphanedEntries: huerfanas },
+      });
+      return reply.send({
+        ok: true,
+        deleted: true,
+        orphanedEntries: huerfanas,
+        message: huerfanas
+          ? `Cliente eliminado. ${huerfanas} registro(s) de tiempo quedaron sin cliente asignado.`
+          : 'Cliente eliminado.',
+      });
     }
     await prisma.client.update({ where: { id }, data: { isActive: false } });
     await audit(request, { action: 'client.deactivate', entity: 'client', entityId: id });
@@ -271,9 +436,32 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
     const { id } = request.params as { id: string };
     const { hard } = request.query as { hard?: string };
     if (hard === '1') {
+      const { force } = request.query as { force?: string };
+      const huerfanas = await prisma.timeEntry.count({ where: { projectId: id } });
+
+      if (huerfanas > 0 && force !== '1') {
+        return reply.code(409).send({
+          error: `Este proyecto tiene ${huerfanas} registro(s) de tiempo que quedarían sin proyecto. Muévelos a otro proyecto antes de borrar, o confirma con force=1.`,
+          code: 'WOULD_ORPHAN_ENTRIES',
+          entries: huerfanas,
+        });
+      }
+
       await prisma.clientProject.delete({ where: { id } });
-      await audit(request, { action: 'project.delete_hard', entity: 'project', entityId: id });
-      return reply.send({ ok: true, deleted: true });
+      await audit(request, {
+        action: 'project.delete_hard',
+        entity: 'project',
+        entityId: id,
+        metadata: { orphanedEntries: huerfanas },
+      });
+      return reply.send({
+        ok: true,
+        deleted: true,
+        orphanedEntries: huerfanas,
+        message: huerfanas
+          ? `Proyecto eliminado. ${huerfanas} registro(s) de tiempo quedaron sin proyecto asignado.`
+          : 'Proyecto eliminado.',
+      });
     }
     await prisma.clientProject.update({ where: { id }, data: { isActive: false } });
     await audit(request, { action: 'project.deactivate', entity: 'project', entityId: id });

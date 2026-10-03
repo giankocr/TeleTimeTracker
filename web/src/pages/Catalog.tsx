@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatHours } from '../lib/format';
-import { Badge, Card, Empty, Field, Modal, Spinner, useToast } from '../components/ui';
+import { Alert, Badge, Card, Empty, Field, Modal, Spinner, useToast } from '../components/ui';
 
 /* =========================================================================
    Catálogo: clientes, proyectos y tipos de tarea globales.
@@ -20,6 +20,11 @@ export function ClientsPage() {
   const [saving, setSaving] = useState(false);
 
   const canWrite = can('clients:write');
+  const canDelete = can('clients:delete');
+  // Confirmacion de borrado con impacto y opcion de reasignar las horas.
+  const [toDelete, setToDelete] = useState<{ item: any; impact: any } | null>(null);
+  const [reassignTo, setReassignTo] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -57,14 +62,53 @@ export function ClientsPage() {
   const toggle = async (client: any) => {
     try {
       if (client.isActive) {
-        if (!window.confirm(`¿Desactivar el cliente ${client.name}? Sus proyectos dejarán de aparecer en el bot.`)) return;
+        if (!window.confirm(`¿Desactivar el cliente ${client.name}?\n\nDeja de aparecer en el bot, pero se conserva y puedes reactivarlo.`)) return;
         await api.delete(`/clients/${client.id}`);
+        push('Cliente desactivado', 'success');
       } else {
         await api.patch(`/clients/${client.id}`, { isActive: true });
+        push('Cliente activado', 'success');
       }
       await load();
     } catch (err) {
       push((err as Error).message, 'error');
+    }
+  };
+
+  /** Abre la confirmacion de borrado mostrando el impacto real. */
+  const askDelete = async (client: any) => {
+    try {
+      const impact = await api.get<any>(`/clients/${client.id}/impact`);
+      setReassignTo('');
+      setToDelete({ item: client, impact });
+    } catch (err) {
+      push((err as Error).message, 'error');
+    }
+  };
+
+  /** Borra el cliente definitivamente (opcionalmente moviendo antes las horas). */
+  const deleteClient = async () => {
+    if (!toDelete) return;
+    setDeleting(true);
+    try {
+      if (reassignTo) {
+        await api.post(`/clients/${toDelete.item.id}/reassign`, { toClientId: reassignTo });
+      }
+      // force=1: el usuario ya vio el impacto en el modal y confirmó.
+      const res = await api.delete<{ message?: string }>(`/clients/${toDelete.item.id}`, { hard: '1', force: '1' });
+      push(res.message ?? 'Cliente eliminado', 'success');
+      setToDelete(null);
+      await load();
+    } catch (err) {
+      const e = err as Error & { status?: number };
+      // 409: quedarían horas sin cliente. Se ofrece forzar o reasignar.
+      if (e.status === 409) {
+        push(e.message, 'error');
+      } else {
+        push(e.message, 'error');
+      }
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -75,17 +119,24 @@ export function ClientsPage() {
           <h1>Clientes</h1>
           <p className="page-sub">Cada cliente agrupa uno o varios proyectos facturables.</p>
         </div>
-        {canWrite ? (
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              setForm({ name: '', code: '', notes: '', isActive: true });
-              setModal({ open: true, editing: null });
-            }}
-          >
-            ＋ Nuevo cliente
-          </button>
-        ) : null}
+        <div className="row">
+          {!canDelete ? (
+            <span className="tiny muted-2" title="Solo los administradores pueden eliminar clientes">
+              🔒 eliminar: solo admin
+            </span>
+          ) : null}
+          {canWrite ? (
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                setForm({ name: '', code: '', notes: '', isActive: true });
+                setModal({ open: true, editing: null });
+              }}
+            >
+              ＋ Nuevo cliente
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <Card>
@@ -139,6 +190,11 @@ export function ClientsPage() {
                           <button className="btn btn-sm" onClick={() => void toggle(c)}>
                             {c.isActive ? 'Desactivar' : 'Activar'}
                           </button>
+                          {canDelete ? (
+                            <button className="btn btn-sm btn-danger" onClick={() => void askDelete(c)} title="Eliminar definitivamente">
+                              🗑
+                            </button>
+                          ) : null}
                         </div>
                       </td>
                     ) : null}
@@ -149,6 +205,67 @@ export function ClientsPage() {
           </div>
         )}
       </Card>
+
+      {toDelete ? (
+        <Modal
+          title={`Eliminar cliente: ${toDelete.item.name}`}
+          onClose={() => setToDelete(null)}
+          footer={
+            <>
+              <button className="btn btn-ghost" onClick={() => setToDelete(null)} disabled={deleting}>
+                Cancelar
+              </button>
+              <button className="btn btn-danger" onClick={() => void deleteClient()} disabled={deleting}>
+                {deleting ? 'Eliminando…' : 'Sí, eliminar definitivamente'}
+              </button>
+            </>
+          }
+        >
+          <Alert kind="error">
+            <b>Acción irreversible.</b> Se elimina el cliente y <b>sus {toDelete.impact.projects.length} proyecto(s)</b> en
+            cascada, junto con las asignaciones de equipo.
+          </Alert>
+
+          <div className="card" style={{ padding: 14 }}>
+            <div className="stack-sm" style={{ gap: 4 }}>
+              <span className="small">
+                Registros de tiempo afectados: <b>{toDelete.impact.entries}</b> ({toDelete.impact.hours} h)
+              </span>
+              {toDelete.impact.projects.length ? (
+                <span className="small muted">
+                  Proyectos: {toDelete.impact.projects.map((p: any) => p.name).join(', ')}
+                </span>
+              ) : null}
+            </div>
+          </div>
+
+          {toDelete.impact.entries > 0 ? (
+            <>
+              <Alert kind="warning">
+                Las horas <b>no se borran</b>, pero quedarían <b>sin cliente ni proyecto</b> y saldrían de los reportes por
+                cliente. Muévelas antes a otro cliente para conservar el histórico.
+              </Alert>
+              <Field label="Mover esas horas a otro cliente (opcional)">
+                <select className="select" value={reassignTo} onChange={(e) => setReassignTo(e.target.value)}>
+                  <option value="">No mover (quedarán sin cliente)</option>
+                  {clients
+                    .filter((c) => c.id !== toDelete.item.id)
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                </select>
+              </Field>
+            </>
+          ) : null}
+
+          <p className="tiny muted-2">
+            Si solo quieres que deje de usarse, cierra esta ventana y pulsa <b>Desactivar</b>: no aparece en el bot ni en el
+            catálogo, pero se conserva todo.
+          </p>
+        </Modal>
+      ) : null}
 
       {modal.open ? (
         <Modal
@@ -213,6 +330,10 @@ export function ProjectsPage() {
 
   const canWrite = can('projects:write');
   const canTypes = can('tasktypes:write');
+  const canDelete = can('projects:delete');
+  const [toDelete, setToDelete] = useState<{ item: any; impact: any } | null>(null);
+  const [reassignTo, setReassignTo] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -266,14 +387,47 @@ export function ProjectsPage() {
   const toggle = async (p: any) => {
     try {
       if (p.isActive) {
-        if (!window.confirm(`¿Desactivar el proyecto ${p.name}?`)) return;
+        if (!window.confirm(`¿Desactivar el proyecto ${p.name}?\n\nDeja de aparecer en el bot, pero se conserva y puedes reactivarlo.`)) return;
         await api.delete(`/projects/${p.id}`);
+        push('Proyecto desactivado', 'success');
       } else {
         await api.patch(`/projects/${p.id}`, { isActive: true });
+        push('Proyecto activado', 'success');
       }
       await load();
     } catch (err) {
       push((err as Error).message, 'error');
+    }
+  };
+
+  /** Abre la confirmacion de borrado con el impacto real del proyecto. */
+  const askDelete = async (project: any) => {
+    try {
+      const impact = await api.get<any>(`/projects/${project.id}/impact`);
+      setReassignTo('');
+      setToDelete({ item: project, impact });
+    } catch (err) {
+      push((err as Error).message, 'error');
+    }
+  };
+
+  /** Borra el proyecto definitivamente (opcionalmente moviendo antes las horas). */
+  const deleteProject = async () => {
+    if (!toDelete) return;
+    setDeleting(true);
+    try {
+      if (reassignTo) {
+        await api.post(`/projects/${toDelete.item.id}/reassign`, { toProjectId: reassignTo });
+      }
+      // force=1: el usuario ya vio el impacto en el modal y confirmó.
+      const res = await api.delete<{ message?: string }>(`/projects/${toDelete.item.id}`, { hard: '1', force: '1' });
+      push(res.message ?? 'Proyecto eliminado', 'success');
+      setToDelete(null);
+      await load();
+    } catch (err) {
+      push((err as Error).message, 'error');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -289,6 +443,11 @@ export function ProjectsPage() {
             <button className="btn" onClick={() => setTypeModal(true)}>
               🏷 Tipos de tarea
             </button>
+          ) : null}
+          {!canDelete ? (
+            <span className="tiny muted-2" title="Solo los administradores pueden eliminar proyectos">
+              🔒 eliminar: solo admin
+            </span>
           ) : null}
           {canWrite ? (
             <button
@@ -384,6 +543,15 @@ export function ProjectsPage() {
                             <button className="btn btn-sm" onClick={() => void toggle(p)}>
                               {p.isActive ? 'Desactivar' : 'Activar'}
                             </button>
+                            {canDelete ? (
+                              <button
+                                className="btn btn-sm btn-danger"
+                                onClick={() => void askDelete(p)}
+                                title="Eliminar definitivamente"
+                              >
+                                🗑
+                              </button>
+                            ) : null}
                           </div>
                         </td>
                       ) : null}
@@ -462,6 +630,66 @@ export function ProjectsPage() {
             <input type="checkbox" checked={form.isActive} onChange={(e) => setForm({ ...form, isActive: e.target.checked })} />
             Proyecto activo
           </label>
+        </Modal>
+      ) : null}
+
+      {toDelete ? (
+        <Modal
+          title={`Eliminar proyecto: ${toDelete.item.name}`}
+          onClose={() => setToDelete(null)}
+          footer={
+            <>
+              <button className="btn btn-ghost" onClick={() => setToDelete(null)} disabled={deleting}>
+                Cancelar
+              </button>
+              <button className="btn btn-danger" onClick={() => void deleteProject()} disabled={deleting}>
+                {deleting ? 'Eliminando…' : 'Sí, eliminar definitivamente'}
+              </button>
+            </>
+          }
+        >
+          <Alert kind="error">
+            <b>Acción irreversible.</b> Se elimina el proyecto
+            {toDelete.impact.willDelete.members > 0 ? ` y sus ${toDelete.impact.willDelete.members} miembro(s) asignado(s)` : ''}
+            . Su configuración (repos de GitHub, presupuesto, tarifas) se pierde.
+          </Alert>
+
+          <div className="card" style={{ padding: 14 }}>
+            <div className="stack-sm" style={{ gap: 4 }}>
+              <span className="small">
+                Cliente: <b>{toDelete.impact.project.clientName}</b>
+              </span>
+              <span className="small">
+                Registros de tiempo afectados: <b>{toDelete.impact.entries}</b> ({toDelete.impact.hours} h)
+              </span>
+            </div>
+          </div>
+
+          {toDelete.impact.entries > 0 ? (
+            <>
+              <Alert kind="warning">
+                Las horas <b>no se borran</b>, pero quedarían <b>sin proyecto</b> y saldrían de los reportes por proyecto.
+                Muévelas antes a otro proyecto para conservar el histórico.
+              </Alert>
+              <Field label="Mover esas horas a otro proyecto (opcional)">
+                <select className="select" value={reassignTo} onChange={(e) => setReassignTo(e.target.value)}>
+                  <option value="">No mover (quedarán sin proyecto)</option>
+                  {projects
+                    .filter((p) => p.id !== toDelete.item.id)
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} · {p.clientName}
+                      </option>
+                    ))}
+                </select>
+              </Field>
+            </>
+          ) : null}
+
+          <p className="tiny muted-2">
+            Si solo quieres que deje de usarse, pulsa <b>Desactivar</b>: desaparece del bot y del catálogo, pero no se pierde
+            nada.
+          </p>
         </Modal>
       ) : null}
 

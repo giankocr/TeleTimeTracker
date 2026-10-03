@@ -379,7 +379,7 @@ Al cerrar una tarea, si el proyecto tiene `githubRepos`, se consultan **commits 
 | **Registros** | Historial filtrable (rango, estado, cliente, proyecto, persona), cronómetro propio con pausar/reanudar/finalizar, registro manual, export CSV y **anular / eliminar / restaurar** registros (solo admin) |
 | **Reportes** | Ranking del equipo, horas por cliente/proyecto/tipo, export CSV |
 | **Pendientes** | Backlog personal que alimenta el digest del bot |
-| **Clientes / Proyectos** | CRUD, repos de GitHub, presupuesto y tarifa, equipo asignado, tipos de tarea |
+| **Clientes / Proyectos** | CRUD, repos de GitHub, presupuesto y tarifa, equipo asignado, tipos de tarea, **activar/desactivar** y **eliminar definitivamente** (solo admin, con vista previa del impacto) |
 | **Usuarios** | CRUD, rol, supervisor, jornada, Telegram (vincular/desvincular/código), reset de contraseña |
 | **Roles** | Editor de permisos agrupados por área, con plantillas |
 | **Configuración** | Tokens (Telegram/OpenAI/GitHub), jornada por defecto, alertas, registro de webhook, simulador del NLU, auditoría y trazabilidad del bot |
@@ -665,6 +665,9 @@ docker compose up -d --build
 | `GET` | `/api/entries` · `/api/entries/active` | Historial y cronómetro |
 | `POST` | `/api/entries/start` · `/pause` · `/resume` · `/stop` · `/cancel` | Control del cronómetro |
 | `DELETE` | `/api/entries/:id` | **Anula** el registro (recuperable). Con `?hard=1` lo **elimina** de la base |
+| `GET` | `/api/clients/:id/impact` · `/api/projects/:id/impact` | Qué se pierde y qué quedaría huérfano al borrar |
+| `POST` | `/api/clients/:id/reassign` · `/api/projects/:id/reassign` | Mueve las horas a otro cliente/proyecto antes de borrar |
+| `DELETE` | `/api/clients/:id` · `/api/projects/:id` | **Desactiva** por defecto. Con `?hard=1` elimina (exige `force=1` si quedarían horas huérfanas) |
 | `POST` | `/api/entries/:id/restore` | Restaura un registro anulado con su duración original |
 | `GET` | `/api/reports/dashboard` · `/team` · `/activity` · `/export.csv` | Reportes |
 | `GET/PUT` | `/api/settings` | Configuración global |
@@ -751,6 +754,7 @@ El proyecto se validó de extremo a extremo:
 - **Acceso con Telegram**: firma válida → JWT + RBAC; firma manipulada, autorización de 2 h y Telegram sin vincular → rechazados (401/403) y auditados. Formatos de hash `#tgAuthResult` y campos directos verificados.
 - **Widget oficial (legacy)**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
 - **Login OIDC (vigente)**: `id_token` válido → sesión y RBAC; firma ajena, `aud` o `iss` incorrectos, token expirado y `alg: none` → rechazados con el código de error correspondiente; `nonce` verificado; el `phone_number` del token se guarda en el perfil; cabecera `Cross-Origin-Opener-Policy: same-origin-allow-popups` presente (sin ella el popup de Telegram no comunica).
+- **Eliminar clientes y proyectos**: MANAGER recibe `403` en ambos (`clients:delete` y `projects:delete` solo los tiene ADMIN). El impacto se calcula antes (proyecto A: 2 registros / 3 h; cliente Uno: 2 proyectos / 3 registros / 4 h), la reasignación mueve las horas (2 registros movidos, el proyecto destino pasa a 4 h y quedan **0 huérfanos**), el borrado en cascada elimina los proyectos del cliente, y **borrar sin `force` se bloquea con `409 WOULD_ORPHAN_ENTRIES`** cuando dejaría horas sin cliente/proyecto (con `force=1` procede, y si no hay horas asociadas no bloquea).
 - **Gestión de registros por el admin**: un MANAGER/USER recibe `403` al intentar anular o eliminar (`entries:delete` solo lo tiene ADMIN). Anular baja las horas del reporte (3h → 2h) y **restaurar las devuelve exactas** (2h → 3h, 3600s en el registro); el borrado definitivo saca el registro de la base (el `PATCH` posterior da 404), elimina sus pausas en cascada y deja el resumen en la auditoría. Anular una tarea **en curso** y restaurarla devuelve su tiempo exacto (6s).
 - **Menú de Telegram**: 14 comandos registrados con `setMyCommands` en el alcance por defecto **y por chat** para cada usuario vinculado (verificado: 1 llamada general + 2 por chat); `/menu` devuelve sus 6 filas de botones; `/nuevo` ofrece las tres opciones de creación. Los tres flujos verificados de extremo a extremo: crear cliente+proyecto sin arrancar tarea (0 tareas activas), crear solo un proyecto en un cliente existente (0 tareas activas) y crear un tipo de tarea que el NLU reconoce después al dictar (`tipo: Investigación`).
 - **Alta guiada por el bot**: flujo verificado de extremo a extremo (catálogo vacío → el bot pide cliente → crea `Acme Corp` → pide proyecto → crea `Portal Web` → arranca el cronómetro con el título, el tipo y el cliente correctos → `/tiempo` devuelve el acumulado → una segunda tarea reconoce el proyecto sin preguntar).
