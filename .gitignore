@@ -1,0 +1,31 @@
+# Dependencias
+node_modules/
+**/node_modules/
+.npm-cache/
+.docker-config/
+buildx/
+
+# Build
+dist/
+web/dist/
+*.tsbuildinfo
+
+# Datos locales (la BD vive en el volumen /app/data)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Entorno y logs
+.env
+.env.*
+!.env.example
+*.log
+
+# Sistema
+.DS_Store
+Thumbs.db
+coverage/
+.idea/
+.vscode/

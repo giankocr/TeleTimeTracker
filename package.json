@@ -1,0 +1,53 @@
+{
+  "name": "teletimetracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Time tracking hibrido: Bot de Telegram (voz/texto) + Panel Web de administracion. Single container para EasyPanel.",
+  "type": "commonjs",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "prisma:generate": "prisma generate --schema=server/prisma/schema.prisma",
+    "prisma:migrate": "prisma migrate deploy --schema=server/prisma/schema.prisma",
+    "seed": "tsx server/prisma/seed.ts",
+    "dev:server": "tsx watch server/src/index.ts",
+    "dev:web": "npm run dev --workspace @ttt/web",
+    "build:web": "npm run build --workspace @ttt/web",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build": "npm run prisma:generate && npm run build:server && npm run build:web",
+    "start": "node dist/server/src/index.js",
+    "typecheck": "npm run typecheck:server && npm run typecheck:web",
+    "typecheck:server": "tsc -p tsconfig.server.json --noEmit",
+    "typecheck:web": "tsc -p web/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^9.4.0",
+    "@fastify/cors": "^9.0.1",
+    "@fastify/jwt": "^8.0.1",
+    "@fastify/multipart": "^8.3.0",
+    "@fastify/static": "^7.0.4",
+    "@prisma/client": "^5.22.0",
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "fastify-plugin": "^4.5.1",
+    "node-cron": "^3.0.3",
+    "openai": "^4.73.0",
+    "pino": "^9.5.0",
+    "pino-pretty": "^11.3.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.9.0",
+    "@types/node-cron": "^3.0.11",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

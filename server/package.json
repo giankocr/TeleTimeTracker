@@ -1,0 +1,6 @@
+{
+  "name": "@ttt/server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend Fastify + Prisma + Bot de Telegram de TeleTimeTracker"
+}

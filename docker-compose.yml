@@ -1,0 +1,91 @@
+# ============================================================================
+#  TeleTimeTracker — docker-compose (1 contenedor + volumen persistente)
+#
+#  Uso local:
+#     cp .env.example .env   # y ajusta los valores
+#     docker compose up -d --build
+#     -> Panel: http://localhost:8080
+#
+#  En EasyPanel puedes usar este archivo como "Compose" o crear un servicio
+#  tipo App apuntando al Dockerfile (ver README.md → Guia EasyPanel).
+# ============================================================================
+
+services:
+  teletimetracker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: teletimetracker:latest
+    container_name: teletimetracker
+    restart: unless-stopped
+
+    # Puerto del panel web / API
+    ports:
+      - "${APP_PORT:-8080}:8080"
+
+    env_file:
+      - .env
+
+    environment:
+      NODE_ENV: production
+      # Se fija aquí (tiene prioridad sobre .env) para que la BD siempre viva
+      # dentro del volumen y nunca se cree una carpeta relativa en el host.
+      DATA_DIR: /app/data
+      # Si DATABASE_URL viene vacio se usa SQLite en /app/data/teletimetracker.db
+      DATABASE_URL: ${DATABASE_URL:-file:/app/data/teletimetracker.db}
+      TZ: ${TZ:-America/Bogota}
+
+    # ---------------------------------------------------------------------
+    # VOLUMEN PERSISTENTE (lo unico que hay que respaldar)
+    #   /app/data  -> teletimetracker.db (SQLite), backups, adjuntos
+    # ---------------------------------------------------------------------
+    volumes:
+      - ttt_data:/app/data
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ttt_data:
+    driver: local
+
+# ---------------------------------------------------------------------------
+# OPCIONAL: PostgreSQL en lugar de SQLite
+#   1. Descomenta el servicio de abajo.
+#   2. En server/prisma/schema.prisma cambia:  provider = "postgresql"
+#   3. Define en el .env:
+#        DATABASE_URL=postgresql://ttt:ttt_password@postgres:5432/teletimetracker?schema=public
+# ---------------------------------------------------------------------------
+#  postgres:
+#    image: postgres:16-alpine
+#    restart: unless-stopped
+#    environment:
+#      POSTGRES_USER: ttt
+#      POSTGRES_PASSWORD: ttt_password
+#      POSTGRES_DB: teletimetracker
+#    volumes:
+#      - ttt_pgdata:/var/lib/postgresql/data
+#    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready -U ttt -d teletimetracker"]
+#      interval: 10s
+#      timeout: 5s
+#      retries: 5
+#
+# volumes:
+#   ttt_pgdata:

@@ -1,0 +1,29 @@
+# ---------------------------------------------------------------------------
+# Contexto de build de Docker: se excluye todo lo que se instala o compila
+# dentro de la imagen (node_modules, dist, datos locales).
+# ---------------------------------------------------------------------------
+node_modules
+**/node_modules
+dist
+web/dist
+data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.npm-cache
+.docker-config
+buildx
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.log
+server.log
+server-bot.log
+coverage
+.DS_Store
+Dockerfile
+docker-compose.yml
+README.md
