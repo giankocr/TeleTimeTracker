@@ -554,6 +554,14 @@ DATABASE_URL=mysql://USUARIO:PASSWORD@HOST:3306/NOMBRE_DB
 - **Percent-encodea el password** si lleva caracteres especiales: `!`→`%21`, `@`→`%40`, `#`→`%23`, `$`→`%24`, `%`→`%25`, `:`→`%3A`, `/`→`%2F`. Sin esto la URL se parsea mal.
 - En el primer arranque se crean las 17 tablas y se siembra solo (roles, admin, tipos de tarea).
 
+**Verificación y autorreparación del esquema**
+
+Al arrancar, el bootstrap **comprueba que la base tenga lo que el modelo necesita** (tablas y columnas clave) y, si falta algo, **reintenta las migraciones**. Esto existe por un fallo real: una base adoptada a medias (con las tablas base pero sin `tasks`) quedaba marcada como «migrada», la migración no se reintentaba nunca y el panel devolvía `500` en cada consulta mientras `/health` seguía diciendo `ok`.
+
+- `/health` informa del estado: `"schema": { "ready": true, "missing": [] }`. Si sale `ready: false`, la API afectada estará fallando.
+- El aplicador es **idempotente**: si una tabla, columna, índice o clave foránea ya existe, esa sentencia se salta. Así una migración se puede reejecutar para reparar en lugar de «marcar y olvidar».
+- Se registra **la sentencia exacta** que falla y su motivo (`[migrate] sentencia fallida: ALTER TABLE …`), porque un fallo a medias deja la base inconsistente y el síntoma aparece mucho después.
+
 **Qué pasa al arrancar con MySQL** (todo automático, sin tocar el Dockerfile):
 
 1. Detecta el motor por `DATABASE_URL`.
@@ -849,6 +857,7 @@ El proyecto se validó de extremo a extremo:
 - **Login OIDC (vigente)**: `id_token` válido → sesión y RBAC; firma ajena, `aud` o `iss` incorrectos, token expirado y `alg: none` → rechazados con el código de error correspondiente; `nonce` verificado; el `phone_number` del token se guarda en el perfil; cabecera `Cross-Origin-Opener-Policy: same-origin-allow-popups` presente (sin ella el popup de Telegram no comunica).
 - **Primer administrador desde el bot**: con la base vacía, compartir el teléfono crea un `ADMIN` vinculado, devuelve un código de 6 dígitos que **inicia sesión correctamente** (`200`, rol ADMIN) y deja al usuario crear clientes (`201`) y listar usuarios (`200`). Con la base ya poblada, el mismo gesto queda como solicitud pendiente.
 - **Audio → registro**: con la cuenta vinculada, una nota de voz se transcribe y crea el registro con **cliente, proyecto y tipo** (`Acme` / `Portal Web` / `Maquetacion`), y el segundo audio reconoce el proyecto y arranca directo (2 registros).
+- **Autorreparación del esquema**: partiendo de una base a medias (tablas base sin `tasks`, migración ya marcada como aplicada), el arranque la detecta (`missing: tabla:tasks, columna:time_entries.taskId`), reejecuta las migraciones de forma idempotente, crea la tabla y la columna, hace el **backfill** (3 registros → 2 tareas con 5400 s y 900 s, 3 registros enlazados) y deja `/health` con `schema.ready: true`. Una segunda ejecución no duplica nada (0 sentencias aplicadas). Verificado en MySQL 8.4 y SQLite.
 - **Navegación agrupada**: Clientes, Proyectos, Tareas y Registros de tiempo en la sección «Gestión de trabajo» (antes «Catálogo»), con enlaces cruzados entre la tarea y sus registros mediante `?taskId=`.
 - **Selección + audio (`/registrar`)**: cliente (2 opciones con su nº de proyectos) → proyecto → tarea (con su tiempo acumulado) → audio. El audio se registra **sobre la tarea elegida** (`origen: TELEGRAM_VOICE`, transcripción como descripción) y el tramo se **acumula en la misma tarea** (`tramos=3`, 5400 s). La ruta «➕ Tarea nueva» + audio crea la tarea («Revisar accesibilidad del formulario») dentro del proyecto elegido.
 - **Tarea con varios registros**: 3 tramos de «Maquetación del login» → **una** tarea con `entryCount=3` y `totalSeconds=6600`; al retomarla se añade un 4.º tramo a la **misma** tarea (sigue habiendo 2 tareas en total); el detalle lista sus tramos con fechas y duraciones; filtrar registros por `taskId` devuelve sus 4 tramos; borrar un tramo recalcula el acumulado (3 tramos, 3600 s).

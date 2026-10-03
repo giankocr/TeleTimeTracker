@@ -33,6 +33,8 @@ interface RunnerOptions {
   /** Registra una migracion como aplicada. */
   markApplied: (name: string, statements: number) => Promise<void>;
   log?: (message: string) => void;
+  /** Se invoca con la migracion y el error para poder registrarlo con detalle. */
+  onStatementError?: (migration: string, error: string) => void;
 }
 
 export interface MigrateResult {
@@ -98,12 +100,146 @@ export async function runMigrations(options: RunnerOptions): Promise<MigrateResu
       result.applied.push(migration.name);
       log(`[migrate] aplicada ${migration.name} (${statements.length} sentencias)`);
     } catch (err) {
-      result.failed = { name: migration.name, error: (err as Error).message };
-      log(`[migrate] FALLO ${migration.name}: ${(err as Error).message}`);
+      const mensaje = (err as Error).message;
+      result.failed = { name: migration.name, error: mensaje };
+      log(`[migrate] FALLO ${migration.name}: ${mensaje}`);
+      // Se registra la sentencia concreta: sin esto, un fallo de migracion deja
+      // la base a medias y el error solo aparece despues como 500 en la API.
+      if (options.onStatementError) options.onStatementError(migration.name, mensaje);
       return result;
     }
   }
 
   if (!result.applied.length) log('[migrate] todo al dia');
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Verificacion del esquema
+// ---------------------------------------------------------------------------
+
+export interface SchemaCheck {
+  ok: boolean;
+  /** Tablas o columnas que faltan respecto al modelo actual. */
+  missing: string[];
+}
+
+/**
+ * Comprueba que la base tenga lo que el modelo necesita.
+ *
+ * Motivo: si una migracion falla (o la imagen se construye con el modelo nuevo
+ * pero la BD no migra), Prisma empieza a devolver P2021/P2022 en cada consulta y
+ * el panel se llena de 500 mientras `/health` sigue diciendo "ok". Aqui se
+ * detecta ANTES de servir trafico, para poder repararlo y avisar.
+ */
+export async function verifySchema(
+  query: (sql: string) => Promise<unknown[]>,
+  dialect: SqlDialect,
+): Promise<SchemaCheck> {
+  const missing: string[] = [];
+
+  // Tablas que debe tener el modelo actual.
+  const requiredTables = [
+    'roles', 'users', 'clients', 'projects', 'task_types', 'tasks',
+    'time_entries', 'pauses', 'system_settings', 'auth_sessions',
+  ];
+
+  if (dialect === 'mysql') {
+    const filas = (await query(
+      'SELECT table_name AS t FROM information_schema.tables WHERE table_schema = DATABASE()',
+    )) as Array<{ t: string }>;
+    const existentes = new Set(filas.map((f) => String(f.t).toLowerCase()));
+    for (const tabla of requiredTables) {
+      if (!existentes.has(tabla)) missing.push(`tabla:${tabla}`);
+    }
+    const columnas = (await query(
+      'SELECT table_name AS t, column_name AS c FROM information_schema.columns WHERE table_schema = DATABASE()',
+    )) as Array<{ t: string; c: string }>;
+    const tiene = (tabla: string, col: string) =>
+      columnas.some((k) => String(k.t).toLowerCase() === tabla && String(k.c).toLowerCase() === col);
+    if (!tiene('time_entries', 'taskid')) missing.push('columna:time_entries.taskId');
+  } else {
+    // SQLite: sqlite_master para tablas y PRAGMA para columnas.
+    const tablas = (await query(
+      "SELECT name AS t FROM sqlite_master WHERE type = 'table'",
+    )) as Array<{ t: string }>;
+    const existentes = new Set(tablas.map((f) => String(f.t).toLowerCase()));
+    for (const tabla of requiredTables) {
+      if (!existentes.has(tabla)) missing.push(`tabla:${tabla}`);
+    }
+    if (existentes.has('time_entries')) {
+      const cols = (await query('PRAGMA table_info(time_entries)')) as Array<{ name: string }>;
+      if (!cols.some((c) => String(c.name).toLowerCase() === 'taskid')) missing.push('columna:time_entries.taskId');
+    }
+  }
+
+  return { ok: missing.length === 0, missing };
+}
+
+
+// ---------------------------------------------------------------------------
+// Aplicacion idempotente
+// ---------------------------------------------------------------------------
+
+export interface IdempotentOptions {
+  /** Ejecuta una sentencia SQL. */
+  run: (sql: string) => Promise<void>;
+  /** Devuelve true si ese objeto ya existe (tabla, columna o indice). */
+  exists: (kind: 'table' | 'column' | 'index', name: string) => Promise<boolean>;
+  log?: (message: string) => void;
+}
+
+/**
+ * Ejecuta las sentencias de una migracion saltando las que ya estan aplicadas.
+ *
+ * Por que: la adopcion de una base ya creada marca las migraciones como
+ * aplicadas sin conocer sus efectos, y si esa base estaba a medias (por ejemplo
+ * sin la tabla `tasks`) la migracion no se reintentaba NUNCA: el panel quedaba
+ * en 500 permanente mientras `/health` decia "ok". Siendo idempotente, la
+ * migracion se puede reejecutar y repara el esquema por si sola.
+ *
+ * Se reconocen las formas que genera Prisma:
+ *   CREATE TABLE [IF NOT EXISTS] `x` / "x"   ·  ALTER TABLE `t` ADD COLUMN `c`
+ *   CREATE [UNIQUE] INDEX `i` ON `t`(...)    ·  ALTER TABLE `t` ADD CONSTRAINT `i`
+ */
+export async function applyMigrationIdempotent(sql: string, options: IdempotentOptions): Promise<{ run: number; skipped: number }> {
+  const log = options.log ?? (() => undefined);
+  const statements = splitStatements(sql);
+  let ejecutadas = 0;
+  let saltadas = 0;
+
+  for (const statement of statements) {
+    const nombre = (patron: RegExp): string | null => {
+      const m = statement.match(patron);
+      return m ? m[1]! : null;
+    };
+
+    const crearTabla = nombre(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?([\w.]+)[`"]?/i);
+    if (crearTabla && (await options.exists('table', crearTabla))) {
+      saltadas++;
+      continue;
+    }
+
+    const agregarColumna = statement.match(/ALTER\s+TABLE\s+[`"]?([\w.]+)[`"]?\s+ADD\s+(?:COLUMN\s+)?[`"]?([\w.]+)[`"]?/i);
+    if (agregarColumna && !/ADD\s+CONSTRAINT|ADD\s+FOREIGN/i.test(statement)) {
+      if (await options.exists('column', `${agregarColumna[1]}.${agregarColumna[2]}`)) {
+        saltadas++;
+        continue;
+      }
+    }
+
+    const crearIndice =
+      nombre(/CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?([\w.]+)[`"]?/i) ??
+      nombre(/ALTER\s+TABLE\s+[`"]?[\w.]+[`"]?\s+ADD\s+CONSTRAINT\s+[`"]?([\w.]+)[`"]?/i);
+    if (crearIndice && (await options.exists('index', crearIndice))) {
+      saltadas++;
+      continue;
+    }
+
+    await options.run(statement);
+    ejecutadas++;
+  }
+
+  log(`[migrate] ${ejecutadas} sentencia(s) aplicadas, ${saltadas} ya estaban`);
+  return { run: ejecutadas, skipped: saltadas };
 }

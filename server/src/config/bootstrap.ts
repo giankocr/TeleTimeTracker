@@ -26,6 +26,13 @@ const MYSQL_MIGRATIONS = path.resolve(process.cwd(), 'server/prisma/migrations.m
 const PRISMA_CLI = path.resolve(process.cwd(), 'node_modules/prisma/build/index.js');
 const SEED_FILE = path.resolve(process.cwd(), 'server/prisma/seed.ts');
 
+/** Resultado de la comprobacion del esquema, para /health y los logs. */
+export const schemaState: { ready: boolean; missing: string[]; checked: boolean } = {
+  ready: false,
+  missing: [],
+  checked: false,
+};
+
 export interface DbProfile {
   engine: 'sqlite' | 'mysql' | 'postgresql' | 'other';
   schema: string;
@@ -135,13 +142,54 @@ function useBundledClient(engine: DbProfile['engine']): boolean {
   }
 }
 
+/** ¿Existe ya ese objeto en la base? (para aplicar migraciones de forma idempotente) */
+async function objectExists(
+  db: { $queryRawUnsafe: (sql: string, ...args: unknown[]) => Promise<unknown> },
+  kind: 'table' | 'column' | 'index',
+  name: string,
+): Promise<boolean> {
+  try {
+    if (kind === 'table') {
+      const r = (await db.$queryRawUnsafe(
+        'SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+        name,
+      )) as Array<{ n: bigint | number }>;
+      return Number(r[0]?.n ?? 0) > 0;
+    }
+    if (kind === 'column') {
+      const [tabla, columna] = name.split('.');
+      const r = (await db.$queryRawUnsafe(
+        'SELECT COUNT(*) AS n FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+        tabla,
+        columna,
+      )) as Array<{ n: bigint | number }>;
+      return Number(r[0]?.n ?? 0) > 0;
+    }
+    // OJO: las FOREIGN KEY de MySQL no estan en `statistics` (que son indices),
+    // sino en `table_constraints` con su nombre. Si no se miran ahi, un ALTER
+    // TABLE ADD CONSTRAINT ya aplicado se reintenta y falla con el codigo 1826.
+    const r = (await db.$queryRawUnsafe(
+      'SELECT COUNT(*) AS n FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND constraint_name = ?',
+      name,
+    )) as Array<{ n: bigint | number }>;
+    if (Number(r[0]?.n ?? 0) > 0) return true;
+    const idx = (await db.$queryRawUnsafe(
+      'SELECT COUNT(*) AS n FROM information_schema.statistics WHERE table_schema = DATABASE() AND index_name = ?',
+      name,
+    )) as Array<{ n: bigint | number }>;
+    return Number(idx[0]?.n ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Aplica las migraciones de MySQL con el aplicador propio.
  * Ver server/src/db/migrator.ts para el motivo (P3019 de Prisma).
  */
 async function migrateWithRunner(profile: DbProfile): Promise<void> {
   try {
-    const { runMigrations, splitStatements, discoverMigrations } = await import('../db/migrator');
+    const { runMigrations, discoverMigrations, applyMigrationIdempotent } = await import('../db/migrator');
     const { prisma: db } = await import('../db/prisma');
 
     // Tabla de control (sintaxis MySQL).
@@ -153,37 +201,39 @@ async function migrateWithRunner(profile: DbProfile): Promise<void> {
         'PRIMARY KEY (`name`))',
     );
 
-    // Base creada por una version anterior (o migrada desde SQLite) sin
-    // historial: se registran las migraciones como aplicadas sin re-ejecutarlas.
-    const existing = (await db.$queryRawUnsafe(
-      "SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('users','time_entries','roles')",
-    )) as Array<{ n: bigint | number }>;
-    if (Number(existing[0]?.n ?? 0) > 0) {
-      const registradas = new Set(
-        ((await db.$queryRawUnsafe('SELECT `name` FROM `_app_migrations`')) as Array<{ name: string }>).map((r) => r.name),
-      );
-      const faltantes = discoverMigrations(profile.migrations).filter((m) => !registradas.has(m.name));
-      if (faltantes.length) {
-        console.warn(
-          `[bootstrap] la base ya tiene tablas: se registran ${faltantes.length} migracion(es) como aplicadas sin re-ejecutarlas`,
-        );
-        for (const migracion of faltantes) {
-          await db.$executeRawUnsafe(
-            'INSERT INTO `_app_migrations` (`name`, `statements`) VALUES (?, ?)',
-            migracion.name,
-            0,
-          );
-        }
-      }
+    // NOTA: antes, si la base "ya tenia tablas" se registraban TODAS las
+    // migraciones como aplicadas sin ejecutarlas. Eso ocultaba bases a medias
+    // (por ejemplo con las tablas base pero sin `tasks`) y la migracion no se
+    // reintentaba nunca. Ahora se ejecutan de verdad y, al ser idempotentes, las
+    // sentencias ya aplicadas se saltan: adoptar y reparar es la misma operacion.
+    const existentes = await objectExists(db, 'table', 'users');
+    if (existentes) {
+      console.log('[bootstrap] la base ya tiene tablas: se verifica migracion por migracion (idempotente)');
     }
+    void discoverMigrations;
 
     const result = await runMigrations({
       migrationsDir: profile.migrations,
       execute: async (sql) => {
-        // MySQL no admite varias sentencias en una llamada: se ejecutan una a una.
-        for (const statement of splitStatements(sql)) {
-          await db.$executeRawUnsafe(statement);
-        }
+        // Se aplica de forma IDEMPOTENTE: si la base ya tiene una tabla, columna
+        // o indice, esa sentencia se salta. Asi una migracion se puede reejecutar
+        // para reparar un esquema a medias en lugar de marcar y olvidar.
+        await applyMigrationIdempotent(sql, {
+          run: async (statement) => {
+            try {
+              await db.$executeRawUnsafe(statement);
+            } catch (err) {
+              // Se registra la sentencia exacta: un fallo a medias deja la base
+              // inconsistente y sin esto solo se ve un error vacio.
+              const detalle = (err as Error).message.replace(/\s+/g, ' ').slice(0, 300);
+              console.error(`[migrate] sentencia fallida: ${statement.replace(/\s+/g, ' ').slice(0, 160)}`);
+              console.error(`[migrate] motivo: ${detalle}`);
+              throw err;
+            }
+          },
+          exists: async (kind, name) => await objectExists(db, kind, name),
+          log: console.log,
+        });
       },
       applied: async () => {
         const rows = (await db.$queryRawUnsafe('SELECT `name` FROM `_app_migrations`')) as Array<{ name: string }>;
@@ -274,6 +324,50 @@ export async function bootstrapDatabase(): Promise<void> {
         }
       }
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Verificacion del esquema + autorreparacion
+  //
+  // Si una migracion fallo (o la imagen trae un modelo mas nuevo que la base),
+  // Prisma devuelve P2021/P2022 en cada consulta: el panel se llena de 500 y
+  // /health sigue diciendo "ok". Se comprueba a proposito y se intenta reparar.
+  // -------------------------------------------------------------------------
+  try {
+    const { verifySchema } = await import('../db/migrator');
+    const { prisma: db } = await import('../db/prisma');
+    const consulta = async (sql: string) => (await db.$queryRawUnsafe(sql)) as unknown[];
+
+    let check = await verifySchema(consulta, profile.engine === 'mysql' ? 'mysql' : 'sqlite');
+    if (!check.ok) {
+      console.warn('─'.repeat(64));
+      console.warn('⚠  El esquema de la base NO coincide con el modelo. Falta:');
+      for (const item of check.missing.slice(0, 8)) console.warn(`     · ${item}`);
+      console.warn('   Se reintentan las migraciones pendientes...');
+
+      if (profile.engine === 'mysql') {
+        await migrateWithRunner(profile);
+      } else {
+        runPrisma(['migrate', 'deploy', '--schema', profile.schema]);
+      }
+
+      check = await verifySchema(consulta, profile.engine === 'mysql' ? 'mysql' : 'sqlite');
+      if (check.ok) {
+        console.log('✅ Esquema reparado aplicando las migraciones pendientes');
+      } else {
+        console.error(`❌ SIGUE faltando: ${check.missing.join(', ')}`);
+        console.error('   Causa probable: la migracion fallo. Revisa el error de arriba.');
+        console.error('   Mientras tanto la API devolvera errores 500 en las consultas afectadas.');
+      }
+      console.warn('─'.repeat(64));
+    }
+
+    schemaState.checked = true;
+    schemaState.ready = check.ok;
+    schemaState.missing = check.missing;
+    if (check.ok) console.log('✅ Esquema verificado');
+  } catch (err) {
+    console.warn('[bootstrap] no se pudo verificar el esquema:', (err as Error).message);
   }
 
   if (env.AUTO_SEED) {

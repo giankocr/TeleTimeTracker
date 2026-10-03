@@ -7,6 +7,7 @@ import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { env, dataDirStatus } from './config/env';
+import { schemaState } from './config/bootstrap';
 import { prisma } from './db/prisma';
 
 import authRoutes from './routes/auth.routes';
@@ -84,6 +85,9 @@ export async function buildApp(): Promise<FastifyInstance> {
     uptime: Math.round(process.uptime()),
     version: '1.0.0',
     dataDir: { path: env.DATA_DIR, writable: dataDirStatus.writable, error: dataDirStatus.error },
+    // Si el esquema no coincide con el modelo, se ve aqui en lugar de descubrirlo
+    // por una avalancha de 500 en la API.
+    schema: schemaState.checked ? { ready: schemaState.ready, missing: schemaState.missing } : { ready: null },
   }));
 
   app.get('/api/health', async (_request, reply) => {
