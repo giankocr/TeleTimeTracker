@@ -24,8 +24,15 @@ import {
 } from '../services/timer.service';
 import { isWithinWorkHours } from '../utils/time';
 import { listVisibleProjects } from '../services/resolve.service';
-import { beginGuidedStart, chooseProject, handleClientName, handleProjectName } from '../services/guided-start.service';
-import { clearFlow, getFlow, updateFlow } from '../services/guided-flow.service';
+import {
+  beginGuidedStart,
+  chooseProject,
+  handleClientName,
+  handleProjectName,
+} from '../services/guided-start.service';
+import { clearFlow, getFlow, startFlow, updateFlow } from '../services/guided-flow.service';
+import { MENU_KEYBOARD, menuText } from './menu';
+import { askNewClientName, askNewTaskTypeName, handleTaskTypeName } from '../services/guided-start.service';
 import { githubToken } from '../config/env';
 import {
   MAIN_KEYBOARD,
@@ -147,6 +154,8 @@ interface CommandResult {
   text?: string;
   /** Muestra el boton persistente "Compartir mi numero". */
   needContactKeyboard?: boolean;
+  /** Markup explicito (tiene prioridad sobre los anteriores). */
+  markup?: any;
 }
 
 async function handleSlashCommand(message: CommandInput, user: LinkedUser | null): Promise<CommandResult> {
@@ -181,8 +190,43 @@ async function handleSlashCommand(message: CommandInput, user: LinkedUser | null
     };
   }
 
+  if (command === '/menu') {
+    return {
+      handled: true,
+      text: menuText(user?.companyName ?? 'TeleTimeTracker', Boolean(user)),
+      markup: MENU_KEYBOARD,
+    };
+  }
+
   if (command === '/start' || command === '/ayuda' || command === '/help') {
     return { handled: true, text: helpMessage(user?.companyName ?? 'TeleTimeTracker', Boolean(user)) };
+  }
+
+  // Creacion de catalogo desde el chat (clientes, proyectos, tipos de tarea).
+  if (command === '/nuevo' || command === '/nueva') {
+    if (!user) {
+      return { handled: true, text: '⚠️ Vincula tu cuenta primero con <code>/telefono</code>.' };
+    }
+    const que = arg.toLowerCase();
+    if (que.startsWith('cliente')) return { handled: true, text: askNewClientName(catalogContext(user)).text, markup: MENU_KEYBOARD };
+    if (que.startsWith('proyecto')) return { handled: true, text: askNewClientName(catalogContext(user), 'CATALOG_PROJECT').text, markup: MENU_KEYBOARD };
+    if (que.startsWith('tipo') || que.startsWith('tarea')) {
+      return { handled: true, text: askNewTaskTypeName(catalogContext(user)).text, markup: MENU_KEYBOARD };
+    }
+    return {
+      handled: true,
+      text: [
+        '➕ <b>¿Qué quieres crear?</b>',
+        '',
+        'Elige una opción:',
+      ].join('\n'),
+      markup: {
+        inline_keyboard: [
+          [{ text: '🏢 Cliente', callback_data: 'newclient:' }, { text: '📁 Proyecto', callback_data: 'newproj:' }],
+          [{ text: '🏷 Tipo de tarea', callback_data: 'menu:newtasktype' }],
+        ],
+      },
+    };
   }
 
   // Vinculacion compartiendo el telefono (camino principal para quien empieza).
@@ -347,6 +391,12 @@ async function continueGuidedFlow(
   if (step === 'ASK_PROJECT_NAME') {
     return handleProjectName(context, text);
   }
+  if (step === 'ASK_TASKTYPE_NAME') {
+    return handleTaskTypeName(
+      { userId: user.id, roleKey: user.roleKey, timezone: user.timezone, source },
+      text,
+    );
+  }
   return null;
 }
 
@@ -379,11 +429,9 @@ async function handleMessage(message: TgMessage, started: number): Promise<void>
   // 1) Comandos explicitos
   const commandResult = await handleSlashCommand({ text: message.text, from: message.from }, user);
   if (commandResult.handled) {
-    const markup = commandResult.needContactKeyboard
-      ? shareContactKeyboard()
-      : user
-        ? MAIN_KEYBOARD
-        : undefined;
+    const markup =
+      commandResult.markup ??
+      (commandResult.needContactKeyboard ? shareContactKeyboard() : user ? MAIN_KEYBOARD : undefined);
     await reply(chatId, commandResult.text!, { reply_markup: markup });
     await logInteraction({
       userId: user?.id,
@@ -528,7 +576,12 @@ async function handleNaturalText(
   // Si hay un alta guiada en curso, la respuesta del usuario es el nombre del
   // cliente o del proyecto (no una tarea nueva).
   const activeFlow = getFlow(user.id);
-  if (activeFlow && (activeFlow.step === 'ASK_CLIENT_NAME' || activeFlow.step === 'ASK_PROJECT_NAME')) {
+  if (
+    activeFlow &&
+    (activeFlow.step === 'ASK_CLIENT_NAME' ||
+      activeFlow.step === 'ASK_PROJECT_NAME' ||
+      activeFlow.step === 'ASK_TASKTYPE_NAME')
+  ) {
     const guided = await continueGuidedFlow(user, text, activeFlow.step, source);
     if (guided) {
       await reply(chatId, guided.text, { reply_markup: guided.markup ?? MAIN_KEYBOARD });
@@ -538,7 +591,12 @@ async function handleNaturalText(
         chatId: String(chatId),
         kind,
         rawText: text,
-        intent: activeFlow.step === 'ASK_CLIENT_NAME' ? 'CREATE_CLIENT' : 'CREATE_PROJECT',
+        intent:
+          activeFlow.step === 'ASK_CLIENT_NAME'
+            ? 'CREATE_CLIENT'
+            : activeFlow.step === 'ASK_PROJECT_NAME'
+              ? 'CREATE_PROJECT'
+              : 'CREATE_TASKTYPE',
         reply: guided.text,
         latencyMs: Date.now() - started,
       });
@@ -676,7 +734,8 @@ async function handleCallback(query: TgUpdate['callback_query']): Promise<void> 
       break;
     }
     case 'newproj': {
-      // Crear un proyecto dentro de un cliente que ya existe.
+      // Crear un proyecto dentro de un cliente existente. Es un alta de catalogo:
+      // al terminar NO se arranca ninguna tarea.
       const clientes = await prisma.client.findMany({
         where: { isActive: true },
         orderBy: { name: 'asc' },
@@ -684,9 +743,23 @@ async function handleCallback(query: TgUpdate['callback_query']): Promise<void> 
         select: { id: true, name: true },
       });
       if (!clientes.length) {
-        await reply(chatId, 'No hay clientes todavía. Escribe el nombre del cliente y lo creo.');
+        // Sin clientes: se crea primero el cliente (mismo flujo guiado).
+        const r = askNewClientName(catalogContext(user), 'CATALOG_PROJECT');
+        await reply_(chatId, r.text, r.markup);
         break;
       }
+
+      // Se abre el flujo en modo CATALOGO antes de mostrar la lista: asi, al
+      // elegir cliente y escribir el proyecto, no se arranca ninguna tarea.
+      const flujoActual = getFlow(user.id);
+      // startFlow (no updateFlow): crea el flujo si no existia.
+      startFlow(user.id, {
+        step: 'CONFIRM_PROJECT',
+        mode: flujoActual?.mode === 'START_TASK' || flujoActual?.startAfterCreate ? 'START_TASK' : 'CATALOG_PROJECT',
+        originalText: flujoActual?.originalText ?? '',
+        startAfterCreate: flujoActual?.startAfterCreate ?? false,
+      });
+
       await reply(chatId, '¿A qué <b>cliente</b> pertenece el proyecto?', {
         reply_markup: {
           inline_keyboard: clientes.map((c) => [{ text: c.name.slice(0, 60), callback_data: `pickclient:${c.id}` }]),
@@ -695,10 +768,67 @@ async function handleCallback(query: TgUpdate['callback_query']): Promise<void> 
       break;
     }
     case 'newclient': {
-      updateFlow(user.id, { step: 'ASK_CLIENT_NAME' });
-      await reply(chatId, '¿<b>Cómo se llama el cliente</b>? Escríbelo aquí abajo.\n<i>Ejemplo: Acme Corp</i>', {
-        reply_markup: (await import('./telegram.api')).leaveKeyboard(),
-      });
+      // Desde el menu es un alta de catalogo; desde el flujo de una tarea sin
+      // proyecto, el contexto ya trae el modo START_TASK.
+      const flujoPrevio = getFlow(user.id);
+      const modo = flujoPrevio?.mode === 'START_TASK' || flujoPrevio?.startAfterCreate ? 'START_TASK' : 'CATALOG_CLIENT';
+      const reply = askNewClientName(catalogContext(user), modo === 'CATALOG_CLIENT' ? 'CATALOG_CLIENT' : 'CATALOG_PROJECT');
+      if (modo === 'START_TASK') {
+        // Se reutiliza el flujo existente (texto original, tipo, título...).
+        startFlow(user.id, { step: 'ASK_CLIENT_NAME' });
+      }
+      await reply_(chatId, reply.text, reply.markup);
+      break;
+    }
+    case 'menu': {
+      // Acciones del menu con botones.
+      const accion = value ?? '';
+      if (accion === 'newtasktype') {
+        const r = askNewTaskTypeName(catalogContext(user));
+        await reply_(chatId, r.text, r.markup);
+        break;
+      }
+      if (accion === 'estado') {
+        const entry = await getActiveEntry(user.id);
+        await reply_(chatId, statusMessage(entry, user.timezone, await todaySeconds(user.id, user.timezone)));
+        break;
+      }
+      if (accion === 'terminar') {
+        const res = await stopTimer({ userId: user.id, source: 'TELEGRAM_BUTTON' });
+        await reply_(chatId, res.entry ? stopConfirmation(res.entry, user.timezone, Boolean(githubToken())) : res.message ?? 'Sin tarea activa.');
+        break;
+      }
+      if (accion === 'pausar') {
+        const res = await pauseTimer(user.id, 'Pausa desde menú', 'TELEGRAM_BUTTON');
+        await reply_(chatId, res.entry ? pauseConfirmation(res.entry, user.timezone) : res.message ?? 'Sin tarea activa.');
+        break;
+      }
+      if (accion === 'retomar') {
+        const res = await resumeTimer(user.id);
+        await reply_(chatId, res.entry ? resumeConfirmation(res.entry, user.timezone) : res.message ?? 'Sin tarea activa.');
+        break;
+      }
+      if (accion === 'reporte') {
+        await reply_(chatId, await buildTelegramReport(user, { preset: 'today', entities: {} }));
+        break;
+      }
+      if (accion === 'pendientes') {
+        const [tasks, entry] = await Promise.all([pendingTasksFor(user.id), getActiveEntry(user.id)]);
+        await reply_(chatId, agendaMessage(tasks, entry?.title ?? null, user.timezone));
+        break;
+      }
+      if (accion === 'tiempo') {
+        await reply_(
+          chatId,
+          '⏱ Escribe <code>/tiempo nombre de la tarea o proyecto</code>\n<i>Ejemplo: /tiempo login</i>',
+        );
+        break;
+      }
+      if (accion === 'ayuda') {
+        await reply_(chatId, helpMessage(user.companyName, true));
+        break;
+      }
+      await reply_(chatId, menuText(user.companyName, true), MENU_KEYBOARD);
       break;
     }
     case 'pickclient': {
@@ -707,7 +837,16 @@ async function handleCallback(query: TgUpdate['callback_query']): Promise<void> 
         await reply(chatId, 'Ese cliente ya no existe.');
         break;
       }
-      updateFlow(user.id, { step: 'ASK_PROJECT_NAME', clientId: cliente.id, clientLabel: cliente.name });
+      // Se conserva el modo del flujo: si venia de «crear proyecto» (catalogo),
+      // al crear el proyecto no debe arrancar el cronometro.
+      const flujoPrevio = getFlow(user.id);
+      startFlow(user.id, {
+        step: 'ASK_PROJECT_NAME',
+        clientId: cliente.id,
+        clientLabel: cliente.name,
+        mode: flujoPrevio?.mode === 'CATALOG_PROJECT' || flujoPrevio?.mode === 'CATALOG_CLIENT' ? flujoPrevio.mode : undefined,
+        startAfterCreate: flujoPrevio?.startAfterCreate ?? false,
+      });
       await reply(chatId, `Cliente: <b>${cliente.name}</b>\n\n¿<b>Cómo se llama el proyecto</b>? Escríbelo aquí abajo.`, {
         reply_markup: (await import('./telegram.api')).leaveKeyboard(),
       });
@@ -716,6 +855,14 @@ async function handleCallback(query: TgUpdate['callback_query']): Promise<void> 
     default:
       await reply(chatId, 'Accion no reconocida.');
   }
+}
+
+/** Alias de `reply` para callbacks con markup explicito. */
+const reply_ = (chatId: number | string, text: string, markup?: any) => reply(chatId, text, markup ? { reply_markup: markup } : undefined);
+
+/** Contexto para crear catalogo desde el chat (no arranca tarea). */
+function catalogContext(user: LinkedUser) {
+  return { userId: user.id, roleKey: user.roleKey, timezone: user.timezone, source: 'TELEGRAM_TEXT' };
 }
 
 /** Contexto minimo para las acciones guiadas disparadas por botones. */

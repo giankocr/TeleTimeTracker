@@ -190,8 +190,19 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/settings/telegram/webhook — registra el webhook en Telegram
+  // POST /api/settings/telegram/commands — publica el menu de comandos
   // -------------------------------------------------------------------------
+  app.post('/telegram/commands', { preHandler: [requirePermission(PERMISSIONS.BOT_ADMIN)] }, async (request, reply) => {
+    const { publishBotCommands, BOT_COMMANDS } = await import('../bot/commands');
+    const result = await publishBotCommands();
+    await audit(request, { action: 'settings.telegram_publish_commands', metadata: { ok: result.ok } });
+    if (!result.ok) return reply.code(400).send({ ok: false, error: result.error });
+    return reply.send({ ok: true, commands: BOT_COMMANDS, message: 'Menú de comandos actualizado en Telegram.' });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/settings/telegram/webhook — registra el webhook en Telegram
+  // -----------------------------------------------------------------------
   app.post('/telegram/webhook', { preHandler: [requirePermission(PERMISSIONS.BOT_ADMIN)] }, async (request, reply) => {
     const parsed = z.object({ publicUrl: z.string().url().optional() }).safeParse(request.body ?? {});
     const base = parsed.success && parsed.data.publicUrl ? parsed.data.publicUrl.replace(/\/$/, '') : env.PUBLIC_URL;

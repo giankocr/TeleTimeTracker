@@ -139,6 +139,11 @@ async function main(): Promise<void> {
       console.log(`🤖 Bot conectado: @${me.username} (${me.first_name})`);
       applyBotTokenFromSettings(telegramToken());
 
+      // Menu de comandos de Telegram (aparece al escribir «/» en el chat).
+      const { publishBotCommands } = await import('./bot/commands');
+      const menu = await publishBotCommands();
+      console.log(menu.ok ? '📋 Menú de comandos publicado en Telegram' : `⚠  No se pudo publicar el menú: ${menu.error}`);
+
       if (env.TELEGRAM_MODE === 'webhook') {
         if (env.PUBLIC_URL) {
           await registerWebhookWithRetry(`${env.PUBLIC_URL}/api/telegram/webhook`);

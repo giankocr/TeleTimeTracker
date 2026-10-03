@@ -180,6 +180,7 @@ const TASK_TYPE_KEYWORDS: Array<{ type: string; re: RegExp }> = [
   { type: 'Maquetacion', re: /\b(maquetacion|maquetar|html|css|layout|landing|front)\b/ },
   { type: 'Backend', re: /\b(backend|api|endpoint|servicio|base de datos|query)\b/ },
   { type: 'Planificacion', re: /\b(planificacion|estimar|estimacion|refinamiento|backlog grooming)\b/ },
+  { type: 'Investigación', re: /\b(investigacion|investigar|research|analisis|spike|prototipo|benchmark)\b/ },
 ];
 
 /** Extrae "del cliente X" / "en el proyecto Y" del texto. */

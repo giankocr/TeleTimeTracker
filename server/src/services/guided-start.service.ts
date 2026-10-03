@@ -1,6 +1,6 @@
 import { prisma } from '../db/prisma';
 import { clearFlow, findOrCreateClient, findOrCreateProject, getFlow, setFlow, updateFlow } from './guided-flow.service';
-import { listVisibleProjects, resolveProject, type ResolvedProject } from './resolve.service';
+import { listVisibleProjects, normalize, resolveProject, type ResolvedProject } from './resolve.service';
 import { leaveKeyboard, type ReplyMarkup } from '../bot/telegram.api';
 import { startTimer } from './timer.service';
 import { projectActionsKeyboard, startConfirmation } from '../bot/messages';
@@ -26,6 +26,14 @@ export interface GuidedReply {
   markup?: ReplyMarkup;
   /** Si ya arranco el cronometro, la confirmacion final. */
   started?: boolean;
+}
+
+/** Contexto de un flujo que NO arranca tarea (solo crea catalogo). */
+export interface CatalogContext {
+  userId: string;
+  roleKey: string;
+  timezone: string;
+  source: string;
 }
 
 interface StartContext {
@@ -127,6 +135,8 @@ export async function handleClientName(context: StartContext, clientName: string
     return { text: `⚠️ ${escapeHtml((err as Error).message)}. Escribe otro nombre, por favor.` };
   }
 
+  const flow = getFlow(context.userId);
+  const esCatalogo = flow?.mode === 'CATALOG_CLIENT' || flow?.mode === 'CATALOG_PROJECT';
   updateFlow(context.userId, { step: 'ASK_PROJECT_NAME', clientId: client.id, clientLabel: client.name });
 
   const proyectos = await prisma.clientProject.findMany({
@@ -148,9 +158,14 @@ export async function handleClientName(context: StartContext, clientName: string
       avisoExistente,
       lista,
       '',
-      '¿<b>Cómo se llama el proyecto</b>? Escríbelo aquí abajo.',
+      esCatalogo
+        ? '¿<b>Cómo se llama el proyecto</b> que quieres crear? Escríbelo aquí abajo.'
+        : '¿<b>Cómo se llama el proyecto</b>? Escríbelo aquí abajo.',
       '<i>Ejemplo: Portal Web</i>',
-    ].join('\n'),
+      esCatalogo ? '\nEscribe <code>cancelar</code> para salir.' : '',
+    ]
+      .filter(Boolean)
+      .join('\n'),
     markup: leaveKeyboard(),
   };
 }
@@ -176,6 +191,15 @@ export async function handleProjectName(context: StartContext, projectName: stri
   const aviso = project.created
     ? `✅ Proyecto <b>${escapeHtml(project.name)}</b> creado en <b>${escapeHtml(project.clientName)}</b>.`
     : `✅ Usando el proyecto <b>${escapeHtml(project.name)}</b> de <b>${escapeHtml(project.clientName)}</b>.`;
+
+  // Modo catalogo: se crea y se termina (no se arranca cronometro).
+  if (flow.mode === 'CATALOG_CLIENT' || flow.mode === 'CATALOG_PROJECT') {
+    clearFlow(context.userId);
+    return {
+      text: [aviso, '', 'Ya está en el catálogo y disponible para todos. Los administradores pueden completar presupuesto, tarifas y repos de GitHub desde el panel web.'].join('\n'),
+      markup: { remove_keyboard: true },
+    };
+  }
 
   const started = await startWithProject(context, {
     id: project.id,
@@ -222,4 +246,73 @@ export async function chooseProject(context: StartContext, projectId: string): P
     clientName: project.client.name,
     githubRepos: project.githubRepos,
   });
+}
+
+
+// ---------------------------------------------------------------------------
+// Flujos de catalogo (sin arrancar tarea)
+// ---------------------------------------------------------------------------
+
+/** Paso 1 de «crear cliente»: pide el nombre. */
+export function askNewClientName(context: CatalogContext, mode: 'CATALOG_CLIENT' | 'CATALOG_PROJECT' = 'CATALOG_CLIENT'): GuidedReply {
+  setFlow(context.userId, { step: 'ASK_CLIENT_NAME', mode, originalText: '', startAfterCreate: false });
+  return {
+    text: [
+      mode === 'CATALOG_PROJECT' ? '📁 <b>Nuevo proyecto</b>' : '🏢 <b>Nuevo cliente</b>',
+      '',
+      '¿<b>Cómo se llama el cliente</b>? Escríbelo aquí abajo.',
+      '<i>Ejemplo: Acme Corp</i>',
+      '',
+      'Escribe <code>cancelar</code> para salir.',
+    ].join('\n'),
+    markup: leaveKeyboard(),
+  };
+}
+
+/** Paso 1 de «crear tipo de tarea»: pide el nombre. */
+export function askNewTaskTypeName(context: CatalogContext): GuidedReply {
+  setFlow(context.userId, { step: 'ASK_TASKTYPE_NAME', mode: 'CATALOG_TASKTYPE', originalText: '', startAfterCreate: false });
+  return {
+    text: [
+      '🏷 <b>Nuevo tipo de tarea</b>',
+      '',
+      'El bot lo usará para clasificar lo que dices por voz.',
+      '¿<b>Cómo se llama</b>? <i>Ejemplo: Investigación</i>',
+      '',
+      'Escribe <code>cancelar</code> para salir.',
+    ].join('\n'),
+    markup: leaveKeyboard(),
+  };
+}
+
+/** Crea el tipo de tarea y ofrece crear otro. */
+export async function handleTaskTypeName(context: CatalogContext, name: string): Promise<GuidedReply> {
+  const limpio = name.trim().replace(/\s+/g, ' ');
+  if (limpio.length < 2) {
+    return { text: '⚠️ El nombre es demasiado corto. Escribe otro, por favor.' };
+  }
+
+  const tipos = await prisma.taskType.findMany({ select: { id: true, name: true } });
+  const existente = tipos.find((t) => normalize(t.name) === normalize(limpio));
+  if (existente) {
+    clearFlow(context.userId);
+    return {
+      text: `✅ El tipo <b>${escapeHtml(existente.name)}</b> ya existe.`,
+      markup: { remove_keyboard: true },
+    };
+  }
+
+  const creado = await prisma.taskType.create({
+    data: { name: limpio, aliases: normalize(limpio), billable: true },
+  });
+  clearFlow(context.userId);
+
+  return {
+    text: [
+      `✅ Tipo de tarea <b>${escapeHtml(creado.name)}</b> creado.`,
+      '',
+      'Ya puedes usarlo: al dictar una tarea, el bot lo reconocerá.',
+    ].join('\n'),
+    markup: { remove_keyboard: true },
+  };
 }

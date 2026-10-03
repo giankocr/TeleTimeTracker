@@ -14,10 +14,22 @@ import { normalize } from './resolve.service';
  * proceso se reinicia, el usuario solo tiene que volver a escribir la tarea.
  */
 
-export type FlowStep = 'NONE' | 'ASK_CLIENT_NAME' | 'CONFIRM_PROJECT' | 'ASK_PROJECT_NAME';
+export type FlowStep =
+  | 'NONE'
+  | 'ASK_CLIENT_NAME'
+  | 'CONFIRM_PROJECT'
+  | 'ASK_PROJECT_NAME'
+  | 'ASK_TASKTYPE_NAME';
+
+/** Que se pretendia al crear: solo el catalogo o iniciar una tarea despues. */
+export type FlowMode = 'START_TASK' | 'CATALOG_CLIENT' | 'CATALOG_PROJECT' | 'CATALOG_TASKTYPE';
 
 export interface GuidedFlow {
   step: FlowStep;
+  /** Intencion del flujo (crear catalogo vs. arrancar la tarea al terminar). */
+  mode?: FlowMode;
+  /** Si tras crear el proyecto hay que arrancar el cronometro. */
+  startAfterCreate?: boolean;
   /** Texto original que disparo la tarea (para reutilizarlo al iniciar). */
   originalText: string;
   projectName?: string;
@@ -49,12 +61,36 @@ export function setFlow(userId: string, flow: Omit<GuidedFlow, 'createdAt'>): Gu
   return stored;
 }
 
+/**
+ * Actualiza un flujo existente. Devuelve null si NO habia flujo: no lo crea.
+ *
+ * Ojo: para abrir un flujo nuevo hay que usar `setFlow` (o `startFlow`, que
+ * crea-o-actualiza). Usar `updateFlow` sin flujo previo es un no-op silencioso,
+ * que fue justo el error que impedia crear proyectos desde el menu.
+ */
 export function updateFlow(userId: string, patch: Partial<GuidedFlow>): GuidedFlow | null {
   const flow = getFlow(userId);
   if (!flow) return null;
   const updated = { ...flow, ...patch, createdAt: Date.now() };
   FLOWS.set(userId, updated);
   return updated;
+}
+
+/**
+ * Crea el flujo si no existe o lo actualiza si ya estaba.
+ * Es lo que quieren casi todos los puntos de entrada.
+ */
+export function startFlow(
+  userId: string,
+  initial: Pick<GuidedFlow, 'step'> & Partial<Omit<GuidedFlow, 'step'>>,
+): GuidedFlow {
+  const existing = getFlow(userId);
+  return setFlow(userId, {
+    originalText: '',
+    startAfterCreate: false,
+    ...(existing ?? {}),
+    ...initial,
+  });
 }
 
 export function clearFlow(userId: string): void {

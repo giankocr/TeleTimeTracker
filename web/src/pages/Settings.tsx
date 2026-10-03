@@ -349,6 +349,19 @@ export default function SettingsPage() {
               <button className="btn btn-sm" onClick={() => void testTelegram()}>
                 🔌 Probar token
               </button>
+              <button
+                className="btn btn-sm"
+                onClick={async () => {
+                  try {
+                    const res = await api.post<{ ok: boolean; message: string }>('/settings/telegram/commands');
+                    push(res.message ?? 'Menú publicado', 'success');
+                  } catch (err) {
+                    push((err as Error).message, 'error');
+                  }
+                }}
+              >
+                📋 Publicar menú de comandos
+              </button>
               <button className="btn btn-sm" onClick={() => void testAi()} disabled={testingAi}>
                 {testingAi ? '⏳ Probando IA…' : '🎙 Probar claves de IA'}
               </button>

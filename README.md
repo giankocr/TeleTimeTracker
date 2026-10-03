@@ -167,6 +167,8 @@ Tablas de apoyo: **Pause** (pausas con motivo y duración), **EntryTag** (etique
 | `/pendientes` | Lista de tareas pendientes (backlog) |
 | `/pausar`, `/retomar`, `/terminar`, `/cancelar` | Control del cronómetro |
 | `/tiempo TAREA` | **Tiempo consumido** en una tarea o proyecto (`/tiempo login`, `/tiempo Portal Web`) |
+| `/nuevo` | ➕ **Menú para crear**: cliente, proyecto o tipo de tarea |
+| `/menu` | 📋 Menú con botones y todos los comandos |
 | `/misproyectos`, `/ayuda` | Proyectos disponibles y ayuda |
 
 También hay un **teclado persistente** (Estado · Pendientes · Pausar · Retomar · Terminar) y **botones inline** en cada confirmación.
@@ -299,6 +301,32 @@ Igual que en NosotrosConstruimos, la pantalla de login ofrece **tres formas de e
 - Los **códigos OTP** duran 10 minutos, son de **un solo uso**, admiten **5 intentos**, tienen **anti-spam de 60 s** entre envíos y se guardan como **SHA-256** (nunca en claro).
 - Solo se acepta un contacto **propio** (`contact.user_id === from.id`): Telegram permite reenviar la agenda de otra persona.
 - Todo intento (acertado o fallido) queda en `audit_logs`; los OTP se auditan enmascarados (`+573001•••567`).
+
+### El menú de Telegram
+
+El bot **registra sus comandos en Telegram** (`setMyCommands`, 14 comandos), así que al escribir `/` en el chat aparece el menú nativo. Además `/menu` responde con **botones inline** para todo lo frecuente:
+
+```
+📊 Estado        | ⏹ Terminar
+⏸ Pausar         | ▶️ Retomar
+➕ Crear cliente y proyecto | 📁 Nuevo proyecto
+🏷 Nuevo tipo de tarea      | 📈 Reporte de hoy
+⏱ Tiempo de una tarea      | 📝 Pendientes
+❓ Ayuda
+```
+
+El menú se publica **automáticamente al arrancar** el contenedor y también se puede republicar desde *Configuración → Telegram → 📋 Publicar menú de comandos* (útil si cambias el token del bot).
+
+**Crear catálogo desde el chat** (`/nuevo`):
+
+| Opción | Flujo | ¿Arranca una tarea? |
+|---|---|---|
+| 🏢 **Cliente** | Pide el nombre → crea el cliente → pide el proyecto → lo crea | No |
+| 📁 **Proyecto** | Pide con qué cliente (lista o nombre) → pide el proyecto → lo crea | No |
+| 🏷 **Tipo de tarea** | Pide el nombre → lo crea con sus alias para el NLU | No |
+| Dictar una tarea sin proyecto | El bot pide cliente y proyecto | **Sí** (es lo que el trabajador pidió) |
+
+La distinción es intencionada: si estás **trabajando** y el proyecto no existe, el bot crea y arranca el cronómetro; si estás **ordenando el catálogo** desde el menú, crea y termina sin cronometrar nada.
 
 ### Alta guiada: crear cliente y proyecto sin salir del chat
 
@@ -724,6 +752,7 @@ El proyecto se validó de extremo a extremo:
 - **Widget oficial (legacy)**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
 - **Login OIDC (vigente)**: `id_token` válido → sesión y RBAC; firma ajena, `aud` o `iss` incorrectos, token expirado y `alg: none` → rechazados con el código de error correspondiente; `nonce` verificado; el `phone_number` del token se guarda en el perfil; cabecera `Cross-Origin-Opener-Policy: same-origin-allow-popups` presente (sin ella el popup de Telegram no comunica).
 - **Gestión de registros por el admin**: un MANAGER/USER recibe `403` al intentar anular o eliminar (`entries:delete` solo lo tiene ADMIN). Anular baja las horas del reporte (3h → 2h) y **restaurar las devuelve exactas** (2h → 3h, 3600s en el registro); el borrado definitivo saca el registro de la base (el `PATCH` posterior da 404), elimina sus pausas en cascada y deja el resumen en la auditoría. Anular una tarea **en curso** y restaurarla devuelve su tiempo exacto (6s).
+- **Menú de Telegram**: 14 comandos registrados con `setMyCommands`; `/menu` devuelve sus 6 filas de botones; `/nuevo` ofrece las tres opciones de creación. Los tres flujos verificados de extremo a extremo: crear cliente+proyecto sin arrancar tarea (0 tareas activas), crear solo un proyecto en un cliente existente (0 tareas activas) y crear un tipo de tarea que el NLU reconoce después al dictar (`tipo: Investigación`).
 - **Alta guiada por el bot**: flujo verificado de extremo a extremo (catálogo vacío → el bot pide cliente → crea `Acme Corp` → pide proyecto → crea `Portal Web` → arranca el cronómetro con el título, el tipo y el cliente correctos → `/tiempo` devuelve el acumulado → una segunda tarea reconoce el proyecto sin preguntar).
 - **MySQL de punta a punta desde la imagen**: partiendo del cliente generado para SQLite (como en el Dockerfile) y con `DATABASE_URL` de MySQL, el arranque cambia el cliente solo, aplica las migraciones y siembra; un segundo arranque no re-aplica nada, y una base con tablas preexistentes se adopta sin recrearlas.
 - **MySQL**: verificado contra un servidor MySQL 8.4 real: migración inicial (17 tablas), seed automático, arranque de la app y flujo completo de API (login, RBAC, CRUD, cronómetro start→pause→resume→stop con pausas descontadas, registro manual, dashboard, CSV, auditoría). Tipos nativos aplicados (`description` → `TEXT`, `permissions` → `VARCHAR(600)`).
