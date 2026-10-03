@@ -11,7 +11,8 @@ import {
   formatSeconds,
   formatTime,
 } from '../lib/format';
-import { Badge, Card, Empty, Field, Modal, RangeSelect, Spinner, useToast } from '../components/ui';
+import { Alert, Badge, Card, Empty, Field, Modal, RangeSelect, Spinner, useToast } from '../components/ui';
+import { useAuth } from '../lib/auth';
 
 /**
  * Registros de tiempo: historial con filtros, control del cronómetro propio
@@ -19,6 +20,8 @@ import { Badge, Card, Empty, Field, Modal, RangeSelect, Spinner, useToast } from
  */
 export default function EntriesPage() {
   const { push } = useToast();
+  const { can } = useAuth();
+  const canDelete = can('entries:delete');
   const [preset, setPreset] = useState('last7');
   const [status, setStatus] = useState('');
   const [search, setSearch] = useState('');
@@ -37,6 +40,9 @@ export default function EntriesPage() {
   const [taskTypes, setTaskTypes] = useState<any[]>([]);
 
   const [manualOpen, setManualOpen] = useState(false);
+  // Confirmacion de borrado definitivo (irreversible).
+  const [toDelete, setToDelete] = useState<any | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [manual, setManual] = useState({ title: '', projectId: '', taskTypeId: '', startedAt: '', endedAt: '', description: '' });
   const [saving, setSaving] = useState(false);
 
@@ -113,11 +119,39 @@ export default function EntriesPage() {
     }
   };
 
-  const cancelEntry = async (id: string) => {
-    if (!window.confirm('¿Descartar este registro? No se contabilizarán sus horas.')) return;
+  /** Anula el registro: se conserva y se puede restaurar; deja de contar horas. */
+  const cancelEntry = async (entry: any) => {
+    if (!window.confirm(`¿Anular «${entry.title ?? 'registro'}»?\n\nDejará de contar horas, pero el registro se conserva y puedes restaurarlo.`)) return;
     try {
-      await api.delete(`/entries/${id}`);
-      push('Registro descartado', 'success');
+      await api.delete(`/entries/${entry.id}`);
+      push('Registro anulado (se puede restaurar)', 'success');
+      await load();
+    } catch (err) {
+      push((err as Error).message, 'error');
+    }
+  };
+
+  /** Elimina el registro definitivamente. Solo con permiso entries:delete. */
+  const deleteEntry = async () => {
+    if (!toDelete) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/entries/${toDelete.id}`, { hard: '1' });
+      push('Registro eliminado definitivamente', 'success');
+      setToDelete(null);
+      await load();
+    } catch (err) {
+      push((err as Error).message, 'error');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  /** Deshace una anulación. */
+  const restoreEntry = async (entry: any) => {
+    try {
+      await api.post(`/entries/${entry.id}/restore`);
+      push('Registro restaurado', 'success');
       await load();
     } catch (err) {
       push((err as Error).message, 'error');
@@ -143,6 +177,11 @@ export default function EntriesPage() {
           <button className="btn btn-primary btn-sm" onClick={() => setManualOpen(true)}>
             ＋ Registro manual
           </button>
+          {!canDelete ? (
+            <span className="tiny muted-2" title="Solo los administradores pueden anular o eliminar registros">
+              🔒 anular/eliminar: solo admin
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -286,9 +325,36 @@ export default function EntriesPage() {
                     </td>
                     <td>
                       <div className="td-actions">
-                        <button className="btn btn-sm btn-ghost" onClick={() => void cancelEntry(e.id)} title="Descartar registro">
-                          🗑
-                        </button>
+                        {e.status === 'CANCELLED' ? (
+                          canDelete ? (
+                            <button
+                              className="btn btn-sm"
+                              onClick={() => void restoreEntry(e)}
+                              title="Restaurar este registro anulado"
+                            >
+                              ↩ Restaurar
+                            </button>
+                          ) : (
+                            <span className="tiny muted-2">anulado</span>
+                          )
+                        ) : canDelete ? (
+                          <>
+                            <button
+                              className="btn btn-sm"
+                              onClick={() => void cancelEntry(e)}
+                              title="Anular: deja de contar horas pero se conserva"
+                            >
+                              Anular
+                            </button>
+                            <button
+                              className="btn btn-sm btn-danger"
+                              onClick={() => setToDelete(e)}
+                              title="Eliminar definitivamente"
+                            >
+                              🗑 Eliminar
+                            </button>
+                          </>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -298,6 +364,48 @@ export default function EntriesPage() {
           </div>
         )}
       </Card>
+
+      {toDelete ? (
+        <Modal
+          title="Eliminar registro definitivamente"
+          onClose={() => setToDelete(null)}
+          footer={
+            <>
+              <button className="btn btn-ghost" onClick={() => setToDelete(null)} disabled={deleting}>
+                Cancelar
+              </button>
+              <button className="btn btn-danger" onClick={() => void deleteEntry()} disabled={deleting}>
+                {deleting ? 'Eliminando…' : 'Sí, eliminar definitivamente'}
+              </button>
+            </>
+          }
+        >
+          <Alert kind="error">
+            <b>Esta acción no se puede deshacer.</b> El registro y sus pausas se borran de la base de datos, y las horas
+            desaparecen de los reportes.
+          </Alert>
+
+          <div className="card" style={{ padding: 14 }}>
+            <div className="stack-sm" style={{ gap: 4 }}>
+              <strong>{toDelete.title ?? 'Sin título'}</strong>
+              <span className="small muted">
+                {toDelete.userName} · {toDelete.projectName ?? 'sin proyecto'}
+                {toDelete.clientName ? ` · ${toDelete.clientName}` : ''}
+              </span>
+              <span className="small muted">
+                {formatDateTime(toDelete.startedAt)} → {toDelete.endedAt ? formatTime(toDelete.endedAt) : 'en curso'} ·{' '}
+                <b>{formatSeconds(toDelete.liveSeconds)}</b>
+              </span>
+              <Badge kind={STATUS_BADGE[toDelete.status]}>{STATUS_LABEL[toDelete.status]}</Badge>
+            </div>
+          </div>
+
+          <p className="tiny muted-2">
+            Si solo quieres que deje de contar horas pero conservar el rastro, cierra esta ventana y usa <b>Anular</b>:
+            podrás restaurarlo después.
+          </p>
+        </Modal>
+      ) : null}
 
       {manualOpen ? (
         <Modal

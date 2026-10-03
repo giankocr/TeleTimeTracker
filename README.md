@@ -348,7 +348,7 @@ Al cerrar una tarea, si el proyecto tiene `githubRepos`, se consultan **commits 
 |---|---|
 | **Login** | Tres vías: **Telegram (un clic)**, **Teléfono + código por el bot** y **Correo + contraseña**, con JWT y refresh rotativo |
 | **Dashboard** | Totales, facturables, promedio por persona, gráficos por día/cliente/tipo, "ahora mismo" con cronómetros vivos |
-| **Registros** | Historial filtrable (rango, estado, cliente, proyecto, persona), cronómetro propio con pausar/reanudar/finalizar, registro manual y export CSV |
+| **Registros** | Historial filtrable (rango, estado, cliente, proyecto, persona), cronómetro propio con pausar/reanudar/finalizar, registro manual, export CSV y **anular / eliminar / restaurar** registros (solo admin) |
 | **Reportes** | Ranking del equipo, horas por cliente/proyecto/tipo, export CSV |
 | **Pendientes** | Backlog personal que alimenta el digest del bot |
 | **Clientes / Proyectos** | CRUD, repos de GitHub, presupuesto y tarifa, equipo asignado, tipos de tarea |
@@ -636,6 +636,8 @@ docker compose up -d --build
 | `GET/POST/PATCH/DELETE` | `/api/users`, `/api/roles`, `/api/clients`, `/api/projects`, `/api/task-types`, `/api/pending-tasks` | CRUD del catálogo |
 | `GET` | `/api/entries` · `/api/entries/active` | Historial y cronómetro |
 | `POST` | `/api/entries/start` · `/pause` · `/resume` · `/stop` · `/cancel` | Control del cronómetro |
+| `DELETE` | `/api/entries/:id` | **Anula** el registro (recuperable). Con `?hard=1` lo **elimina** de la base |
+| `POST` | `/api/entries/:id/restore` | Restaura un registro anulado con su duración original |
 | `GET` | `/api/reports/dashboard` · `/team` · `/activity` · `/export.csv` | Reportes |
 | `GET/PUT` | `/api/settings` | Configuración global |
 | `POST` | `/api/telegram/webhook` | Webhook de Telegram (validado por `secret_token`) |
@@ -721,6 +723,7 @@ El proyecto se validó de extremo a extremo:
 - **Acceso con Telegram**: firma válida → JWT + RBAC; firma manipulada, autorización de 2 h y Telegram sin vincular → rechazados (401/403) y auditados. Formatos de hash `#tgAuthResult` y campos directos verificados.
 - **Widget oficial (legacy)**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
 - **Login OIDC (vigente)**: `id_token` válido → sesión y RBAC; firma ajena, `aud` o `iss` incorrectos, token expirado y `alg: none` → rechazados con el código de error correspondiente; `nonce` verificado; el `phone_number` del token se guarda en el perfil; cabecera `Cross-Origin-Opener-Policy: same-origin-allow-popups` presente (sin ella el popup de Telegram no comunica).
+- **Gestión de registros por el admin**: un MANAGER/USER recibe `403` al intentar anular o eliminar (`entries:delete` solo lo tiene ADMIN). Anular baja las horas del reporte (3h → 2h) y **restaurar las devuelve exactas** (2h → 3h, 3600s en el registro); el borrado definitivo saca el registro de la base (el `PATCH` posterior da 404), elimina sus pausas en cascada y deja el resumen en la auditoría. Anular una tarea **en curso** y restaurarla devuelve su tiempo exacto (6s).
 - **Alta guiada por el bot**: flujo verificado de extremo a extremo (catálogo vacío → el bot pide cliente → crea `Acme Corp` → pide proyecto → crea `Portal Web` → arranca el cronómetro con el título, el tipo y el cliente correctos → `/tiempo` devuelve el acumulado → una segunda tarea reconoce el proyecto sin preguntar).
 - **MySQL de punta a punta desde la imagen**: partiendo del cliente generado para SQLite (como en el Dockerfile) y con `DATABASE_URL` de MySQL, el arranque cambia el cliente solo, aplica las migraciones y siembra; un segundo arranque no re-aplica nada, y una base con tablas preexistentes se adopta sin recrearlas.
 - **MySQL**: verificado contra un servidor MySQL 8.4 real: migración inicial (17 tablas), seed automático, arranque de la app y flujo completo de API (login, RBAC, CRUD, cronómetro start→pause→resume→stop con pausas descontadas, registro manual, dashboard, CSV, auditoría). Tipos nativos aplicados (`description` → `TEXT`, `permissions` → `VARCHAR(600)`).

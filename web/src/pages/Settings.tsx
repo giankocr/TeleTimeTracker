@@ -18,6 +18,11 @@ const SECTIONS: Array<{ title: string; hint?: string; keys: string[] }> = [
     keys: ['ui.company_name', 'work.default_timezone', 'work.default_days', 'work.default_start', 'work.default_end'],
   },
   {
+    title: 'Registros de tiempo',
+    hint: 'Controla si un administrador puede borrar registros de forma definitiva.',
+    keys: ['entries.allow_hard_delete'],
+  },
+  {
     title: 'Alertas del bot',
     hint: 'El bot solo escribe dentro de la jornada laboral de cada usuario.',
     keys: ['alerts.enabled', 'alerts.idle_minutes', 'alerts.digest_cron'],
@@ -57,6 +62,7 @@ const LABELS: Record<string, string> = {
   'work.default_days': 'Días laborables (0=Dom … 6=Sáb)',
   'work.default_start': 'Hora de entrada por defecto',
   'work.default_end': 'Hora de salida por defecto',
+  'entries.allow_hard_delete': 'Permitir borrado definitivo de registros (solo admin)',
   'alerts.enabled': 'Alertas activas',
   'alerts.idle_minutes': 'Minutos sin tarea antes de alertar',
   'alerts.digest_cron': 'Cron del resumen diario',

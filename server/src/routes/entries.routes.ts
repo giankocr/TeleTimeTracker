@@ -7,6 +7,7 @@ import { serializeEntries, serializeEntry } from '../services/entries.service';
 import { listEntries } from '../services/report.service';
 import { startTimer, pauseTimer, resumeTimer, stopTimer, cancelActive, getActiveEntry, liveSeconds } from '../services/timer.service';
 import { resolveRange } from '../utils/time';
+import { SETTING_KEYS, getSettingBool } from '../services/settings.service';
 import { audit } from '../utils/audit';
 
 /**
@@ -322,19 +323,130 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
 
   // -------------------------------------------------------------------------
   // DELETE /api/entries/:id
+  //
+  // Dos modos, ambos con el permiso `entries:delete` (que solo tiene ADMIN):
+  //   - por defecto      -> anula: status CANCELLED, se conserva el rastro y se
+  //                         puede restaurar. Excluido de horas y reportes.
+  //   - ?hard=1          -> ELIMINA el registro de la base (irreversible).
+  //                         Requiere que el ajuste entries.allow_hard_delete
+  //                         siga activo (lo esta por defecto).
   // -------------------------------------------------------------------------
   app.delete('/:id', { preHandler: [requirePermission(PERMISSIONS.ENTRIES_DELETE)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const existing = await prisma.timeEntry.findUnique({ where: { id } });
+    const { hard } = request.query as { hard?: string };
+    const auth = request.auth!;
+
+    const existing = await prisma.timeEntry.findUnique({
+      where: { id },
+      include: { project: { select: { name: true } } },
+    });
     if (!existing) return reply.code(404).send({ error: 'Registro no encontrado' });
 
-    const visible = await visibleUserIds(request.auth!);
+    const visible = await visibleUserIds(auth);
     if (!visible.all && !visible.ids.includes(existing.userId)) {
       return reply.code(403).send({ error: 'Sin acceso a este registro' });
     }
 
-    await prisma.timeEntry.update({ where: { id }, data: { status: 'CANCELLED', durationSec: 0, endedAt: new Date(), closeReason: 'MANUAL_WEB' } });
+    if (hard === '1') {
+      if (!getSettingBool(SETTING_KEYS.ENTRIES_ALLOW_HARD_DELETE, true)) {
+        return reply.code(403).send({
+          error: 'El borrado definitivo está desactivado en la configuración. Usa «Anular».',
+          code: 'HARD_DELETE_DISABLED',
+        });
+      }
+
+      // Resumen para la auditoría: despues del borrado no queda el registro.
+      const resumen = {
+        userId: existing.userId,
+        title: existing.title,
+        project: existing.project?.name ?? null,
+        durationSec: existing.durationSec,
+        startedAt: existing.startedAt.toISOString(),
+        status: existing.status,
+      };
+
+      // Las pausas y las etiquetas se eliminan en cascada (onDelete: Cascade).
+      await prisma.timeEntry.delete({ where: { id } });
+      await audit(request, {
+        action: 'entry.delete_hard',
+        entity: 'timeEntry',
+        entityId: id,
+        metadata: resumen,
+      });
+      return reply.send({ ok: true, deleted: true, summary: resumen });
+    }
+
+    // IMPORTANTE: se conserva la marca de fin ORIGINAL para poder restaurar el
+    // registro con su duracion real (sobrescribirla la inflaba). Si estaba en
+    // curso, se guarda su tiempo computado en `description`-like: aqui se cierra
+    // con la duracion de los segmentos y se anota el fin real.
+    const estabaEnCurso = existing.status === 'RUNNING' || existing.status === 'PAUSED';
+    const duracionAlAnular = estabaEnCurso
+      ? existing.durationSec + Math.max(0, Math.floor((Date.now() - existing.startedAt.getTime()) / 1000))
+      : existing.durationSec;
+
+    await prisma.timeEntry.update({
+      where: { id },
+      data: {
+        status: 'CANCELLED',
+        // A cero: es lo que lo excluye de horas y reportes.
+        durationSec: 0,
+        // Para un registro en curso, el fin es "ahora" (no hay marca previa).
+        endedAt: existing.endedAt ?? new Date(),
+        closeReason: 'MANUAL_WEB',
+        editedById: auth.userId,
+        // Se conserva el tiempo que tenia para poder restaurarlo tal cual.
+        ...(estabaEnCurso ? { githubData: existing.githubData ?? null } : {}),
+        description: estabaEnCurso
+          ? [existing.description, `[anulado con ${duracionAlAnular}s]`].filter(Boolean).join('\n')
+          : existing.description,
+      },
+    });
     await audit(request, { action: 'entry.cancel', entity: 'timeEntry', entityId: id });
-    return reply.send({ ok: true });
+    return reply.send({ ok: true, cancelled: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/entries/:id/restore — deshace una anulación (no un borrado)
+  // -------------------------------------------------------------------------
+  app.post('/:id/restore', { preHandler: [requirePermission(PERMISSIONS.ENTRIES_DELETE)] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const auth = request.auth!;
+
+    const existing = await prisma.timeEntry.findUnique({ where: { id } });
+    if (!existing) return reply.code(404).send({ error: 'Registro no encontrado (¿se eliminó definitivamente?)' });
+    if (existing.status !== 'CANCELLED') {
+      return reply.code(400).send({ error: 'Ese registro no está anulado' });
+    }
+
+    const visible = await visibleUserIds(auth);
+    if (!visible.all && !visible.ids.includes(existing.userId)) {
+      return reply.code(403).send({ error: 'Sin acceso a este registro' });
+    }
+
+    // Se recalcula la duración desde las marcas ORIGINALES (que la anulación
+    // conserva) descontando las pausas. Si no hubiera `endedAt`, el registro
+    // estaba en curso y se cierra ahora.
+    const endedAt = existing.endedAt ?? new Date();
+    const pauses = await prisma.pause.findMany({ where: { entryId: id } });
+    const pausasSeg = pauses.reduce((acc, p) => acc + (p.durationSec || 0), 0);
+    // Si se anulo estando en curso, la duracion real quedo anotada al anular.
+    const anotado = Number((existing.description ?? '').match(/\[anulado con (\d+)s\]/)?.[1] ?? NaN);
+    const bruto = Math.floor((endedAt.getTime() - existing.startedAt.getTime()) / 1000);
+    const totalSeg = Number.isFinite(anotado) ? anotado : Math.max(0, bruto - pausasSeg);
+
+    const restored = await prisma.timeEntry.update({
+      where: { id },
+      data: { status: 'FINISHED', durationSec: totalSeg, closeReason: null, editedById: auth.userId },
+      include: {
+        user: { select: { fullName: true } },
+        project: { include: { client: true } },
+        client: true,
+        taskType: true,
+        tags: true,
+      },
+    });
+    await audit(request, { action: 'entry.restore', entity: 'timeEntry', entityId: id, metadata: { durationSec: totalSeg } });
+    return reply.send({ entry: serializeEntry(restored as any) });
   });
 }

@@ -35,6 +35,8 @@ export const SETTING_KEYS = {
    * 'oauth' -> redireccion oauth.telegram.org sin OIDC  [en desuso]
    */
   TELEGRAM_LOGIN_MODE: 'telegram.login_mode',
+  /** Permite el borrado definitivo de registros de tiempo (solo con entries:delete). */
+  ENTRIES_ALLOW_HARD_DELETE: 'entries.allow_hard_delete',
   TELEGRAM_LOGIN_CLIENT_ID: 'telegram.login_client_id',
   TELEGRAM_LOGIN_CLIENT_SECRET: 'telegram.login_client_secret',
   WELCOME_MESSAGE: 'bot.welcome_message',
@@ -67,6 +69,7 @@ const DEFAULTS: Record<string, string> = {
   [SETTING_KEYS.TIMEZONE]: env.DEFAULT_TIMEZONE,
   [SETTING_KEYS.COMPANY_NAME]: 'TeleTimeTracker',
   [SETTING_KEYS.TELEGRAM_LOGIN_MODE]: 'oidc',
+  [SETTING_KEYS.ENTRIES_ALLOW_HARD_DELETE]: 'true',
   [SETTING_KEYS.WELCOME_MESSAGE]:
     'Hola {name}! Envia una nota de voz o escribe que estas haciendo y empiezo a cronometrar.',
 };
