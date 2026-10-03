@@ -519,6 +519,19 @@ export interface ContactLinkResult {
  *  - Si no existe esa cuenta -> queda como solicitud (bot_contacts) para que
  *    un administrador la apruebe creando el usuario.
  */
+/**
+ * ¿La instancia todavia no tiene ningun usuario? (instalacion sin configurar)
+ *
+ * Caso real: se despliega con MySQL, el seed no crea el admin, nadie puede
+ * entrar al panel y por tanto nadie puede crear el primer usuario ni dar un
+ * codigo de vinculacion. El sistema queda bloqueado: el bot rechaza los audios
+ * con «vincula tu cuenta» y no hay forma de vincularse.
+ */
+export async function isInstanceUnconfigured(): Promise<boolean> {
+  const total = await prisma.user.count();
+  return total === 0;
+}
+
 export async function linkContactToUser(params: {
   telegramId: string;
   telegramUsername?: string | null;
@@ -589,6 +602,86 @@ export async function linkContactToUser(params: {
         '• Enviar <b>notas de voz</b> para registrar tu tiempo\n' +
         '• Entrar al panel web con <b>Teléfono + código</b>\n\n' +
         'Escribe /ayuda para ver ejemplos.',
+    };
+  }
+
+  // Si NO existe ninguna cuenta en el sistema, quien comparte su telefono es
+  // quien esta configurando la instancia: se crea como ADMIN y se le da un
+  // codigo para entrar al panel. Sin esto la instancia queda bloqueada (no hay
+  // admin que pueda vincular a nadie).
+  const sinUsuarios = await isInstanceUnconfigured();
+  if (sinUsuarios) {
+    const { hashPassword } = await import('../middleware/auth');
+    const { encryptSecret } = await import('../config/crypto');
+    const cryptoMod = await import('node:crypto');
+
+    const rolAdmin = await prisma.role.findFirst({ where: { key: 'ADMIN' } });
+    if (!rolAdmin) {
+      return {
+        status: 'PENDING',
+        text:
+          '⚠️ La base de datos está vacía y no encuentro el rol ADMIN.\n' +
+          'Reinicia el contenedor para que se apliquen las migraciones y el seed.',
+      };
+    }
+
+    // Contraseña aleatoria: se entra con el código, no con esta clave.
+    const passwordAleatoria = `${cryptoMod.randomBytes(16).toString('base64url')}Aa1!`;
+    const nombre =
+      [params.firstName, params.lastName].filter(Boolean).join(' ').trim() || `Administrador ${formatPhone(phone)}`;
+
+    const admin = await prisma.user.create({
+      data: {
+        email: `${params.telegramId}@telegram.local`,
+        fullName: nombre,
+        passwordHash: await hashPassword(passwordAleatoria),
+        roleId: rolAdmin.id,
+        phone,
+        phoneVerifiedAt: new Date(),
+        telegramId: params.telegramId,
+        telegramUsername: params.telegramUsername ?? null,
+        telegramLinkedAt: new Date(),
+      },
+    });
+
+    // Codigo de acceso de un solo uso para entrar al panel (10 minutos).
+    const codigo = String(cryptoMod.randomInt(100000, 1000000));
+    await prisma.user.update({
+      where: { id: admin.id },
+      data: {
+        // Mismo hash que verifyPhoneOtp (hashCode): una sola implementacion.
+        otpCodeHash: hashCode(admin.id, codigo),
+        otpExpiresAt: new Date(Date.now() + 30 * 60 * 1000),
+        otpAttempts: 0,
+      },
+    });
+
+    await prisma.botContact.upsert({
+      where: { telegramId: params.telegramId },
+      create: {
+        telegramId: params.telegramId,
+        phone,
+        firstName: params.firstName ?? null,
+        lastName: params.lastName ?? null,
+        username: params.telegramUsername ?? null,
+        status: 'LINKED',
+        userId: admin.id,
+        note: 'Primer administrador creado desde el bot (instancia sin configurar)',
+      },
+      update: { status: 'LINKED', userId: admin.id, phone },
+    });
+    void encryptSecret;
+
+    return {
+      status: 'LINKED',
+      userId: admin.id,
+      text:
+        '🎉 <b>¡Instancia configurada!</b>\n' +
+        `La base de datos estaba vacía, así que te creé como <b>administrador</b> con el número ${formatPhone(phone)}.\n\n` +
+        '🔑 <b>Tu código para entrar al panel web</b> (válido 30 minutos):\n' +
+        `<b><code>${codigo}</code></b>\n\n` +
+        'En la pantalla de acceso elige <b>Teléfono + código</b>, escribe tu número y luego este código.\n\n' +
+        'Ya puedes enviar notas de voz para registrar tu tiempo: el bot te irá pidiendo cliente y proyecto si no existen.',
     };
   }
 

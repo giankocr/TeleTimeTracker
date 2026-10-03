@@ -131,6 +131,27 @@ async function main(): Promise<void> {
 
   applyBotTokenFromSettings(telegramToken());
 
+  // Aviso si la instancia no tiene ningun usuario: sin admin no se puede entrar
+  // al panel ni generar codigos, y el bot rechazaria los audios con
+  // «vincula tu cuenta». Se resuelve compartiendo el telefono con el bot.
+  try {
+    const { prisma: db } = await import('./db/prisma');
+    const usuarios = await db.user.count();
+    if (usuarios === 0) {
+      console.warn('─'.repeat(64));
+      console.warn('⚠  La base de datos NO tiene ningún usuario.');
+      console.warn('   Sin un administrador no se puede entrar al panel ni vincular a nadie,');
+      console.warn('   y el bot rechazará los audios con «vincula tu cuenta primero».');
+      console.warn('');
+      console.warn('   SOLUCIÓN: abre el bot de Telegram, envía /start y toca');
+      console.warn('   «📱 Compartir mi número». Te creará como administrador y te dará');
+      console.warn('   un código para entrar al panel.');
+      console.warn('─'.repeat(64));
+    }
+  } catch (err) {
+    console.warn('[arranque] no se pudo comprobar si hay usuarios:', (err as Error).message);
+  }
+
   // 3) Bot de Telegram.
   if (isConfigured() && env.TELEGRAM_MODE !== 'off') {
     try {

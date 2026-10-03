@@ -302,6 +302,28 @@ Igual que en NosotrosConstruimos, la pantalla de login ofrece **tres formas de e
 - Solo se acepta un contacto **propio** (`contact.user_id === from.id`): Telegram permite reenviar la agenda de otra persona.
 - Todo intento (acertado o fallido) queda en `audit_logs`; los OTP se auditan enmascarados (`+573001•••567`).
 
+### Instancia sin configurar: el bot la configura por ti
+
+Si la base de datos no tiene **ningún** usuario (caso típico: se desplegó con MySQL y el seed no llegó a crear el administrador), el sistema quedaba **bloqueado**: nadie puede entrar al panel, sin admin no hay código de vinculación, y el bot rechaza cada audio con *«vincula tu cuenta primero»* — por eso **no se registraba ningún tiempo**.
+
+Ahora el bot lo resuelve solo:
+
+```
+Tú:  /start  →  📱 Compartir mi número
+
+Bot: 🎉 ¡Instancia configurada!
+     La base de datos estaba vacía, así que te creé como administrador con el número +57 300 123 4567.
+
+     🔑 Tu código para entrar al panel web (válido 30 minutos):
+     893066
+
+     En la pantalla de acceso elige «Teléfono + código», escribe tu número y luego este código.
+```
+
+Con eso ya puedes registrar tiempo por voz y configurar todo lo demás desde el panel. Al arrancar, el contenedor avisa por el log si la base no tiene usuarios (`⚠ La base de datos NO tiene ningún usuario`) con esta misma instrucción.
+
+> Si la instancia **ya tiene** usuarios, compartir el teléfono de alguien desconocido no crea nada: queda como *solicitud de acceso* para que un administrador la apruebe. El auto-registro solo actúa cuando la base está vacía.
+
 ### El menú de Telegram
 
 El bot **registra sus comandos en Telegram** (`setMyCommands`, 14 comandos), así que al escribir `/` en el chat aparece el menú nativo. Además `/menu` responde con **botones inline** para todo lo frecuente:
@@ -755,6 +777,8 @@ El proyecto se validó de extremo a extremo:
 - **Acceso con Telegram**: firma válida → JWT + RBAC; firma manipulada, autorización de 2 h y Telegram sin vincular → rechazados (401/403) y auditados. Formatos de hash `#tgAuthResult` y campos directos verificados.
 - **Widget oficial (legacy)**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
 - **Login OIDC (vigente)**: `id_token` válido → sesión y RBAC; firma ajena, `aud` o `iss` incorrectos, token expirado y `alg: none` → rechazados con el código de error correspondiente; `nonce` verificado; el `phone_number` del token se guarda en el perfil; cabecera `Cross-Origin-Opener-Policy: same-origin-allow-popups` presente (sin ella el popup de Telegram no comunica).
+- **Primer administrador desde el bot**: con la base vacía, compartir el teléfono crea un `ADMIN` vinculado, devuelve un código de 6 dígitos que **inicia sesión correctamente** (`200`, rol ADMIN) y deja al usuario crear clientes (`201`) y listar usuarios (`200`). Con la base ya poblada, el mismo gesto queda como solicitud pendiente.
+- **Audio → registro**: con la cuenta vinculada, una nota de voz se transcribe y crea el registro con **cliente, proyecto y tipo** (`Acme` / `Portal Web` / `Maquetacion`), y el segundo audio reconoce el proyecto y arranca directo (2 registros).
 - **Editar registros**: cambiar el título, **mover a otro proyecto** (el cliente se deduce del proyecto: `Cliente A` → `Cliente B`), asignar tipo, recalcular horas (1h → 2h 30m = 9000 s), marcar/desmarcar facturable, dejar el registro **sin proyecto ni tipo**, con validaciones (`fin anterior al inicio` → 400, `fecha inválida` → 400, **proyecto inexistente → 400** en lugar de dejar el registro vacío en silencio) y sin acceso a registros ajenos (`403`).
 - **Eliminar clientes y proyectos**: MANAGER recibe `403` en ambos (`clients:delete` y `projects:delete` solo los tiene ADMIN). El impacto se calcula antes (proyecto A: 2 registros / 3 h; cliente Uno: 2 proyectos / 3 registros / 4 h), la reasignación mueve las horas (2 registros movidos, el proyecto destino pasa a 4 h y quedan **0 huérfanos**), el borrado en cascada elimina los proyectos del cliente, y **borrar sin `force` se bloquea con `409 WOULD_ORPHAN_ENTRIES`** cuando dejaría horas sin cliente/proyecto (con `force=1` procede, y si no hay horas asociadas no bloquea).
 - **Gestión de registros por el admin**: un MANAGER/USER recibe `403` al intentar anular o eliminar (`entries:delete` solo lo tiene ADMIN). Anular baja las horas del reporte (3h → 2h) y **restaurar las devuelve exactas** (2h → 3h, 3600s en el registro); el borrado definitivo saca el registro de la base (el `PATCH` posterior da 404), elimina sus pausas en cascada y deja el resumen en la auditoría. Anular una tarea **en curso** y restaurarla devuelve su tiempo exacto (6s).
