@@ -1,32 +1,62 @@
-import { PrismaClient } from '@prisma/client';
+import type { PrismaClient } from '@prisma/client';
 import { env } from '../config/env';
 
 /**
- * Cliente Prisma unico. En dev se reutiliza la instancia entre reloads (tsx watch)
- * para no agotar conexiones a SQLite.
- */
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
-
-/**
- * URL de conexion.
+ * Cliente Prisma unico, cargado de forma PEREZOSA.
  *
- * Importante: en SQLite NO se anaden parametros de query a la URL. El CLI de
- * Prisma (migrate deploy / db push) usa exactamente el mismo DATABASE_URL, y una
- * URL con "?parametros" puede resolverse a un archivo distinto al del servidor.
- * El ajuste fino de concurrencia se hace con PRAGMA (ver applySqlitePragmas).
+ * ¿Por que perezoso? El cliente de Prisma se genera PARA UN MOTOR concreto y se
+ * guarda en `node_modules/.prisma/client`. La imagen Docker se compila con el
+ * esquema base (SQLite); si en runtime se configura MySQL, ese cliente no sirve
+ * y Prisma falla con «the URL must start with the protocol `file:`».
+ *
+ * El arranque (config/bootstrap.ts) regenera el cliente cuando detecta que no
+ * corresponde al motor configurado. Para que esa regeneracion sea efectiva, el
+ * paquete `@prisma/client` NO debe haberse importado antes: si ya se importo,
+ * Node cachea el modulo y seguiria usando el cliente viejo. De ahi el Proxy:
+ * el PrismaClient real solo se construye en el primer acceso a una propiedad.
+ *
+ * En dev ademas se reutiliza la instancia entre recargas (tsx watch).
  */
-function connectionUrl(): string {
-  return env.DATABASE_URL;
-}
+const globalForPrisma = globalThis as unknown as {
+  prisma?: PrismaClient;
+  prismaCtor?: typeof PrismaClient;
+};
 
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    datasources: { db: { url: connectionUrl() } },
+let instance: PrismaClient | null = null;
+
+/** Construye (una sola vez) el cliente real. */
+function client(): PrismaClient {
+  if (globalForPrisma.prisma) return globalForPrisma.prisma;
+  if (instance) return instance;
+
+  // Importacion diferida: se resuelve DESPUES de un posible `prisma generate`.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const mod = require('@prisma/client') as typeof import('@prisma/client');
+  const PrismaClientCtor = globalForPrisma.prismaCtor ?? mod.PrismaClient;
+
+  instance = new PrismaClientCtor({
+    datasources: { db: { url: env.DATABASE_URL } },
     log: env.isProd ? ['error'] : ['error', 'warn'],
   });
 
-if (!env.isProd) globalForPrisma.prisma = prisma;
+  if (!env.isProd) globalForPrisma.prisma = instance;
+  return instance;
+}
+
+/**
+ * Proxy que expone el cliente sin construirlo hasta el primer uso.
+ * `prisma.user.findMany()` y `prisma.$queryRaw` funcionan igual que antes.
+ */
+export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
+  get(_target, prop, receiver) {
+    const real = client() as unknown as Record<string | symbol, unknown>;
+    const value = Reflect.get(real, prop, receiver);
+    return typeof value === 'function' ? value.bind(real) : value;
+  },
+  has(_target, prop) {
+    return prop in (client() as object);
+  },
+});
 
 /**
  * PRAGMA iniciales (solo SQLite) para tolerar accesos concurrentes del bot
@@ -49,4 +79,4 @@ export async function applySqlitePragmas(): Promise<void> {
   }
 }
 
-export type Prisma = typeof prisma;
+export type Prisma = PrismaClient;

@@ -401,6 +401,16 @@ DATABASE_URL=mysql://USUARIO:PASSWORD@HOST:3306/NOMBRE_DB
 - **Percent-encodea el password** si lleva caracteres especiales: `!`→`%21`, `@`→`%40`, `#`→`%23`, `$`→`%24`, `%`→`%25`, `:`→`%3A`, `/`→`%2F`. Sin esto la URL se parsea mal.
 - En el primer arranque se crean las 17 tablas y se siembra solo (roles, admin, tipos de tarea).
 
+**Qué pasa al arrancar con MySQL** (todo automático, sin tocar el Dockerfile):
+
+1. Detecta el motor por `DATABASE_URL`.
+2. Si el cliente de Prisma generado en la imagen no corresponde (la imagen se compila con SQLite), usa el cliente de MySQL que ya viene empaquetado en `/prisma-client-mysql`, o lo regenera con el CLI si no existe.
+3. Aplica las migraciones de `server/prisma/migrations.mysql` con el aplicador propio del arranque, registrándolas en la tabla `_app_migrations`.
+4. Si la base **ya tenía tablas** (por ejemplo, una migración desde SQLite o un `db push` anterior) las migraciones se registran como aplicadas **sin re-ejecutarlas**, así que no rompe una base existente.
+5. Ejecuta el seed (roles, admin, tipos de tarea) y levanta el panel.
+
+> ¿Por qué hay un aplicador propio y no `prisma migrate deploy`? Prisma busca **siempre** el directorio `migrations/` junto al esquema y compara su `migration_lock.toml` con el provider del esquema: al convivir los juegos de SQLite y MySQL, `migrate deploy` falla con `P3019` (*datasource provider `mysql` does not match the one specified in the migration_lock.toml, `sqlite`*). El aplicador (`server/src/db/migrator.ts`) ejecuta el mismo SQL y mantiene el historial en `_app_migrations`. Para desarrollo local con SQLite, `prisma migrate dev` sigue funcionando normalmente.
+
 > ⚠️ **PostgreSQL no está soportado de serie**: el SQL de las migraciones es específico del motor y solo se incluyen los juegos de SQLite y MySQL.
 
 #### Por qué hay un esquema aparte para MySQL
@@ -670,6 +680,7 @@ El proyecto se validó de extremo a extremo:
 - **Acceso con Telegram**: firma válida → JWT + RBAC; firma manipulada, autorización de 2 h y Telegram sin vincular → rechazados (401/403) y auditados. Formatos de hash `#tgAuthResult` y campos directos verificados.
 - **Widget oficial (legacy)**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
 - **Login OIDC (vigente)**: `id_token` válido → sesión y RBAC; firma ajena, `aud` o `iss` incorrectos, token expirado y `alg: none` → rechazados con el código de error correspondiente; `nonce` verificado; el `phone_number` del token se guarda en el perfil; cabecera `Cross-Origin-Opener-Policy: same-origin-allow-popups` presente (sin ella el popup de Telegram no comunica).
+- **MySQL de punta a punta desde la imagen**: partiendo del cliente generado para SQLite (como en el Dockerfile) y con `DATABASE_URL` de MySQL, el arranque cambia el cliente solo, aplica las migraciones y siembra; un segundo arranque no re-aplica nada, y una base con tablas preexistentes se adopta sin recrearlas.
 - **MySQL**: verificado contra un servidor MySQL 8.4 real: migración inicial (17 tablas), seed automático, arranque de la app y flujo completo de API (login, RBAC, CRUD, cronómetro start→pause→resume→stop con pausas descontadas, registro manual, dashboard, CSV, auditoría). Tipos nativos aplicados (`description` → `TEXT`, `permissions` → `VARCHAR(600)`).
 - **Acceso con teléfono + OTP**: teléfono no registrado (404), código incorrecto (401), anti-spam de 60 s (429), código correcto (200 con sesión) y reutilización del mismo código (401).
 - **Vinculación desde el bot**: compartir el número sin cuenta → solicitud PENDING visible para el admin; aprobación → cuenta creada con rol y Telegram vinculado; segundo intento → vinculación automática; contacto ajeno → rechazado.

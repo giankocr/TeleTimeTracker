@@ -33,8 +33,13 @@ COPY shared ./shared
 COPY server ./server
 COPY web ./web
 
-# Prisma Client + backend
-RUN npx prisma generate --schema=server/prisma/schema.prisma \
+# Prisma Client: se generan los DOS motores. La imagen se queda con SQLite (modo
+# por defecto) y guarda el de MySQL en /prisma-client-mysql; el arranque copia el
+# que corresponda segun DATABASE_URL, sin necesidad de regenerar ni de red.
+RUN mkdir -p /tmp/prisma-mysql \
+ && npx prisma generate --schema=server/prisma/schema.mysql.prisma \
+ && cp -r node_modules/.prisma/client/. /tmp/prisma-mysql/ \
+ && npx prisma generate --schema=server/prisma/schema.prisma \
  && npm run build:server \
  && npm run build:web
 
@@ -61,6 +66,8 @@ COPY --from=deps /app/node_modules ./node_modules
 # copias el runtime falla con "@prisma/client did not initialize yet".
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=build /app/node_modules/@prisma/client ./node_modules/@prisma/client
+# Respaldo del cliente generado para MySQL (ver etapa de build).
+COPY --from=build /tmp/prisma-mysql ./prisma-client-mysql
 
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/server/package.json ./server/package.json
