@@ -1,10 +1,11 @@
 import { prisma } from '../db/prisma';
-import { clearFlow, findOrCreateClient, findOrCreateProject, getFlow, setFlow, updateFlow } from './guided-flow.service';
+import { clearFlow, findOrCreateClient, findOrCreateProject, getFlow, setFlow, startFlow, updateFlow } from './guided-flow.service';
 import { listVisibleProjects, normalize, resolveProject, type ResolvedProject } from './resolve.service';
 import { leaveKeyboard, type ReplyMarkup } from '../bot/telegram.api';
 import { startTimer } from './timer.service';
+import { findOrCreateTask } from './task.service';
 import { projectActionsKeyboard, startConfirmation } from '../bot/messages';
-import { escapeHtml } from '../utils/format';
+import { escapeHtml, humanDuration } from '../utils/format';
 
 /**
  * ALTA GUIADA DESDE EL BOT
@@ -314,5 +315,280 @@ export async function handleTaskTypeName(context: CatalogContext, name: string):
       'Ya puedes usarlo: al dictar una tarea, el bot lo reconocerá.',
     ].join('\n'),
     markup: { remove_keyboard: true },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Flujo con BOTONES: elegir cliente -> proyecto -> tarea y luego grabar
+//
+// Sirve para cuando el dictado libre no acierta con el nombre, o para ver qué
+// hay disponible. Al terminar la selección se pide la nota de voz y se registra
+// el tiempo directamente sobre la tarea elegida.
+// ---------------------------------------------------------------------------
+
+const SELECT_LABEL = (t: string, sub?: string | null) => (sub ? `${t} · ${sub}` : t).slice(0, 60);
+
+/** Paso 1: elegir cliente (con opción de crear uno nuevo). */
+export async function askClientSelection(context: CatalogContext): Promise<GuidedReply> {
+  setFlow(context.userId, {
+    step: 'SELECT_CLIENT',
+    mode: 'SELECT_AND_RECORD',
+    originalText: '',
+    startAfterCreate: true,
+  });
+
+  const clientes = await prisma.client.findMany({
+    where: { isActive: true },
+    orderBy: { name: 'asc' },
+    take: 10,
+    include: { _count: { select: { projects: true } } },
+  });
+
+  if (!clientes.length) {
+    clearFlow(context.userId);
+    return {
+      text: [
+        '📁 <b>No hay clientes todavía.</b>',
+        '',
+        'Crea el primero con <code>/nuevo cliente</code>, o simplemente dicta la tarea:',
+        '<i>«iniciando maquetación del login para el cliente Acme»</i>',
+      ].join('\n'),
+    };
+  }
+
+  const filas = clientes.map((c) => [
+    { text: SELECT_LABEL(c.name, `${c._count.projects} proyecto(s)`), callback_data: `selclient:${c.id}` },
+  ]);
+  filas.push([{ text: '➕ Cliente nuevo', callback_data: 'newclient:' }]);
+
+  return {
+    text: [
+      '▶️ <b>Registrar tiempo paso a paso</b>',
+      '',
+      '<b>1/3 · ¿Para qué cliente?</b>',
+      'Elige uno de la lista:',
+    ].join('\n'),
+    markup: { inline_keyboard: filas },
+  };
+}
+
+/** Paso 2: elegir proyecto del cliente elegido. */
+export async function askProjectSelection(
+  context: CatalogContext,
+  clientId: string,
+  clientLabel: string,
+): Promise<GuidedReply> {
+  startFlow(context.userId, {
+    step: 'SELECT_PROJECT',
+    mode: 'SELECT_AND_RECORD',
+    clientId,
+    clientLabel,
+    startAfterCreate: true,
+  });
+
+  const proyectos = await prisma.clientProject.findMany({
+    where: { clientId, isActive: true },
+    orderBy: { name: 'asc' },
+    take: 10,
+    include: { _count: { select: { tasks: true } } },
+  });
+
+  const cabecera = ['▶️ <b>Registrar tiempo paso a paso</b>', '', `🏢 Cliente: <b>${escapeHtml(clientLabel)}</b>`, ''];
+
+  if (!proyectos.length) {
+    return {
+      text: [
+        ...cabecera,
+        'Este cliente no tiene proyectos todavía.',
+        '',
+        'Escribe el nombre del proyecto aquí abajo y lo creo (o usa <code>/nuevo proyecto</code>).',
+      ].join('\n'),
+      markup: leaveKeyboard(),
+    };
+  }
+
+  const filas = proyectos.map((p) => [
+    { text: SELECT_LABEL(p.name, `${p._count.tasks} tarea(s)`), callback_data: `selproject:${p.id}` },
+  ]);
+  filas.push([{ text: '➕ Proyecto nuevo', callback_data: 'newproj:' }]);
+
+  return {
+    text: [...cabecera, '<b>2/3 · ¿En qué proyecto?</b>'].join('\n'),
+    markup: { inline_keyboard: filas },
+  };
+}
+
+/** Paso 3: elegir tarea del proyecto (existentes o crear una nueva). */
+export async function askTaskSelection(
+  context: CatalogContext,
+  projectId: string,
+  projectLabel: string,
+): Promise<GuidedReply> {
+  const tareas = await prisma.task.findMany({
+    where: { projectId, status: { in: ['OPEN', 'IN_PROGRESS'] } },
+    orderBy: [{ lastWorkedAt: 'desc' }, { createdAt: 'desc' }],
+    take: 12,
+  });
+
+  startFlow(context.userId, {
+    step: 'SELECT_TASK',
+    mode: 'SELECT_AND_RECORD',
+    selectedProjectId: projectId,
+    selectedProjectLabel: projectLabel,
+    startAfterCreate: true,
+  });
+
+  const cabecera = [
+    '▶️ <b>Registrar tiempo paso a paso</b>',
+    '',
+    `📁 Proyecto: <b>${escapeHtml(projectLabel)}</b>`,
+    '',
+  ];
+
+  const filas = tareas.map((t) => [
+    {
+      text: SELECT_LABEL(t.title, t.totalSeconds ? humanDuration(t.totalSeconds) : null),
+      callback_data: `seltask:${t.id}`,
+    },
+  ]);
+  filas.push([{ text: '➕ Tarea nueva', callback_data: 'newtask:' }]);
+
+  return {
+    text: [
+      ...cabecera,
+      '<b>3/3 · ¿Qué tarea?</b>',
+      tareas.length
+        ? 'Elige una de tus tareas abiertas o crea una nueva:'
+        : 'No hay tareas abiertas en este proyecto. Crea una nueva:',
+    ].join('\n'),
+    markup: { inline_keyboard: filas },
+  };
+}
+
+/** Tarea elegida: se pide la nota de voz (o un texto) para arrancar. */
+export function askForAudioOrText(
+  context: CatalogContext,
+  task: { id: string; title: string; totalSeconds: number; entryCount: number },
+  projectLabel: string,
+  clientLabel?: string,
+): GuidedReply {
+  startFlow(context.userId, {
+    step: 'AWAIT_AUDIO',
+    mode: 'SELECT_AND_RECORD',
+    selectedTaskId: task.id,
+    selectedTaskLabel: task.title,
+    selectedProjectLabel: projectLabel,
+    clientLabel,
+    startAfterCreate: true,
+  });
+
+  const acumulado = task.entryCount
+    ? `\n⏱ Ya lleva <b>${humanDuration(task.totalSeconds)}</b> en ${task.entryCount} tramo(s).`
+    : '\n⏱ Todavía sin tiempo registrado.';
+
+  return {
+    text: [
+      '✅ <b>Contexto listo</b>',
+      '',
+      `🏢 ${escapeHtml(clientLabel ?? '')}`,
+      `📁 ${escapeHtml(projectLabel)}`,
+      `🗂 <b>${escapeHtml(task.title)}</b>${acumulado}`,
+      '',
+      '🎙 <b>Envía ahora la nota de voz</b> con lo que vas a hacer (o escríbelo en texto).',
+      'También puedes enviar el audio sin decir nada más: el registro se hará sobre esta tarea.',
+      '',
+      'Escribe <code>cancelar</code> para salir.',
+    ].join('\n'),
+    markup: leaveKeyboard(),
+  };
+}
+
+/** El usuario pidió crear la tarea a mano en el paso 3. */
+export function askNewTaskTitle(context: CatalogContext, projectLabel: string): GuidedReply {
+  startFlow(context.userId, {
+    step: 'ASK_PROJECT_NAME',
+    mode: 'SELECT_AND_RECORD',
+    selectedProjectLabel: projectLabel,
+    startAfterCreate: true,
+  });
+  return {
+    text: [
+      `📁 Proyecto: <b>${escapeHtml(projectLabel)}</b>`,
+      '',
+      '✍️ Escribe el <b>nombre de la nueva tarea</b>:',
+      '<i>Ejemplo: Maquetación del carrito</i>',
+    ].join('\n'),
+    markup: leaveKeyboard(),
+  };
+}
+
+/**
+ * Arranca (o reutiliza) la tarea elegida y abre su primer tramo.
+ * Es el punto que usa el bot cuando ya hay contexto seleccionado y llega el audio.
+ */
+export async function startSelectedTask(
+  context: { userId: string; roleKey: string; timezone: string; source: string },
+  params: { taskId?: string | null; title?: string; projectId?: string | null; description?: string },
+): Promise<GuidedReply> {
+  const flow = getFlow(context.userId);
+
+  // Tarea ya elegida con botones: se abre un tramo suyo.
+  if (params.taskId) {
+    const tarea = await prisma.task.findUnique({
+      where: { id: params.taskId },
+      include: { project: { include: { client: true } }, client: true, taskType: true },
+    });
+    if (!tarea) {
+      clearFlow(context.userId);
+      return { text: '⚠️ Esa tarea ya no existe. Vuelve a empezar con /registrar.' };
+    }
+
+    const result = await startTimer({
+      userId: context.userId,
+      roleKey: context.roleKey,
+      rawText: params.description || tarea.title,
+      taskId: tarea.id,
+      title: tarea.title,
+      description: params.description,
+      source: context.source,
+    });
+    clearFlow(context.userId);
+    return {
+      text: startConfirmation(result.entry!, result.previous ?? null, context.timezone),
+      markup: leaveKeyboard(),
+      started: true,
+    };
+  }
+
+  // Tarea nueva creada a mano: se crea y se abre su primer tramo.
+  const projectId = (params.projectId ?? flow?.selectedProjectId ?? null) as string | null;
+  const titulo = (params.title ?? '').trim();
+  if (!titulo) {
+    return { text: '⚠️ Necesito un nombre para la tarea.' };
+  }
+
+  const creada = await findOrCreateTask({
+    userId: context.userId,
+    title: titulo,
+    projectId: projectId ?? undefined,
+    description: params.description ?? null,
+  });
+  if (!creada) return { text: '⚠️ No pude crear la tarea con ese nombre.' };
+
+  const result = await startTimer({
+    userId: context.userId,
+    roleKey: context.roleKey,
+    rawText: params.description || titulo,
+    taskId: creada.id,
+    title: creada.title,
+    description: params.description,
+    source: context.source,
+  });
+  clearFlow(context.userId);
+  return {
+    text: startConfirmation(result.entry!, result.previous ?? null, context.timezone),
+    markup: leaveKeyboard(),
+    started: true,
   };
 }

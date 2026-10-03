@@ -11,6 +11,7 @@ import { BOT_COMMANDS } from './commands';
 
 export const MENU_KEYBOARD: ReplyMarkup = {
   inline_keyboard: [
+    [{ text: '▶️ Elegir y grabar tiempo', callback_data: 'menu:registrar' }],
     [
       { text: '📊 Estado', callback_data: 'menu:estado' },
       { text: '⏹ Terminar', callback_data: 'menu:terminar' },

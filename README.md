@@ -196,6 +196,7 @@ Tablas de apoyo: **Pause** (pausas con motivo y duración), **EntryTag** (etique
 | `/pausar`, `/retomar`, `/terminar`, `/cancelar` | Control del cronómetro |
 | `/tareas` | 📋 Tus tareas con el **tiempo acumulado** y cuántos tramos tiene cada una |
 | `/tiempo TAREA` | **Tiempo consumido** en una tarea o proyecto (`/tiempo login`, `/tiempo Portal Web`) |
+| `/registrar` | ▶️ **Elegir cliente → proyecto → tarea** con botones y luego grabar el tiempo por audio |
 | `/nuevo` | ➕ **Menú para crear**: cliente, proyecto o tipo de tarea |
 | `/menu` | 📋 Menú con botones y todos los comandos |
 | `/misproyectos`, `/ayuda` | Proyectos disponibles y ayuda |
@@ -352,6 +353,31 @@ Bot: 🎉 ¡Instancia configurada!
 Con eso ya puedes registrar tiempo por voz y configurar todo lo demás desde el panel. Al arrancar, el contenedor avisa por el log si la base no tiene usuarios (`⚠ La base de datos NO tiene ningún usuario`) con esta misma instrucción.
 
 > Si la instancia **ya tiene** usuarios, compartir el teléfono de alguien desconocido no crea nada: queda como *solicitud de acceso* para que un administrador la apruebe. El auto-registro solo actúa cuando la base está vacía.
+
+### Registrar tiempo paso a paso (`/registrar`)
+
+Además del dictado libre (que sigue siendo lo más rápido), el bot ofrece un flujo **guiado con botones** para cuando el reconocimiento de voz no acierta con un nombre o quieres ver qué hay disponible:
+
+```
+/registrar
+  ▶️ 1/3 ¿Para qué cliente?   [ Acme · 1 proyecto(s) ] [ Globex ] [ ➕ Cliente nuevo ]
+  ▶️ 2/3 ¿En qué proyecto?    [ Portal Web · 1 tarea(s) ] [ ➕ Proyecto nuevo ]
+  ▶️ 3/3 ¿Qué tarea?          [ Arreglar el carrito · 1h 30m ] [ ➕ Tarea nueva ]
+
+  ✅ Contexto listo
+     🏢 Acme · 📁 Portal Web · 🗂 Arreglar el carrito
+     ⏱ Ya lleva 1h 30m en 2 tramo(s).
+     🎙 Envía ahora la nota de voz…
+```
+
+Detalles:
+
+- En cada paso se muestra **cuántos proyectos/tareas tiene** y, en la tarea, **el tiempo ya acumulado** — así se ve de un vistazo qué está en marcha.
+- **➕ Cliente nuevo / Proyecto nuevo** enlazan con los flujos de creación existentes, así que no hay callejón sin salida.
+- **➕ Tarea nueva** pide el nombre (por texto **o por audio**) y crea la tarea dentro del proyecto elegido.
+- El audio que envías después **se registra directamente sobre la tarea elegida**, y su transcripción queda como *descripción* del tramo. Si al retomar una tarea ya en curso, el tramo nuevo se **acumula en la misma tarea**.
+- El flujo caduca a los 15 minutos y se cancela escribiendo `cancelar`.
+- Está también como primer botón de `/menu`: **▶️ Elegir y grabar tiempo**.
 
 ### El menú de Telegram
 
@@ -810,6 +836,7 @@ El proyecto se validó de extremo a extremo:
 - **Login OIDC (vigente)**: `id_token` válido → sesión y RBAC; firma ajena, `aud` o `iss` incorrectos, token expirado y `alg: none` → rechazados con el código de error correspondiente; `nonce` verificado; el `phone_number` del token se guarda en el perfil; cabecera `Cross-Origin-Opener-Policy: same-origin-allow-popups` presente (sin ella el popup de Telegram no comunica).
 - **Primer administrador desde el bot**: con la base vacía, compartir el teléfono crea un `ADMIN` vinculado, devuelve un código de 6 dígitos que **inicia sesión correctamente** (`200`, rol ADMIN) y deja al usuario crear clientes (`201`) y listar usuarios (`200`). Con la base ya poblada, el mismo gesto queda como solicitud pendiente.
 - **Audio → registro**: con la cuenta vinculada, una nota de voz se transcribe y crea el registro con **cliente, proyecto y tipo** (`Acme` / `Portal Web` / `Maquetacion`), y el segundo audio reconoce el proyecto y arranca directo (2 registros).
+- **Selección + audio (`/registrar`)**: cliente (2 opciones con su nº de proyectos) → proyecto → tarea (con su tiempo acumulado) → audio. El audio se registra **sobre la tarea elegida** (`origen: TELEGRAM_VOICE`, transcripción como descripción) y el tramo se **acumula en la misma tarea** (`tramos=3`, 5400 s). La ruta «➕ Tarea nueva» + audio crea la tarea («Revisar accesibilidad del formulario») dentro del proyecto elegido.
 - **Tarea con varios registros**: 3 tramos de «Maquetación del login» → **una** tarea con `entryCount=3` y `totalSeconds=6600`; al retomarla se añade un 4.º tramo a la **misma** tarea (sigue habiendo 2 tareas en total); el detalle lista sus tramos con fechas y duraciones; filtrar registros por `taskId` devuelve sus 4 tramos; borrar un tramo recalcula el acumulado (3 tramos, 3600 s).
 - **Migración agrupada**: los registros previos se convierten en tareas por grupo (3 tramos + 1 → 2 tareas) en SQLite y en MySQL 8.4, con los acumulados sumados y todos los registros enlazados.
 - **Editar registros**: cambiar el título, **mover a otro proyecto** (el cliente se deduce del proyecto: `Cliente A` → `Cliente B`), asignar tipo, recalcular horas (1h → 2h 30m = 9000 s), marcar/desmarcar facturable, dejar el registro **sin proyecto ni tipo**, con validaciones (`fin anterior al inicio` → 400, `fecha inválida` → 400, **proyecto inexistente → 400** en lugar de dejar el registro vacío en silencio) y sin acceso a registros ajenos (`403`).

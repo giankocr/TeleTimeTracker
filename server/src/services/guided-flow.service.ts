@@ -19,10 +19,22 @@ export type FlowStep =
   | 'ASK_CLIENT_NAME'
   | 'CONFIRM_PROJECT'
   | 'ASK_PROJECT_NAME'
-  | 'ASK_TASKTYPE_NAME';
+  | 'ASK_TASKTYPE_NAME'
+  /** Seleccion con botones: cliente -> proyecto -> tarea -> audio. */
+  | 'SELECT_CLIENT'
+  | 'SELECT_PROJECT'
+  | 'SELECT_TASK'
+  /** Esperando la nota de voz (o texto) para el contexto ya elegido. */
+  | 'AWAIT_AUDIO';
 
 /** Que se pretendia al crear: solo el catalogo o iniciar una tarea despues. */
-export type FlowMode = 'START_TASK' | 'CATALOG_CLIENT' | 'CATALOG_PROJECT' | 'CATALOG_TASKTYPE';
+export type FlowMode =
+  | 'START_TASK'
+  | 'CATALOG_CLIENT'
+  | 'CATALOG_PROJECT'
+  | 'CATALOG_TASKTYPE'
+  /** Flujo guiado por botones: se elige cliente/proyecto/tarea y luego se graba. */
+  | 'SELECT_AND_RECORD';
 
 export interface GuidedFlow {
   step: FlowStep;
@@ -39,6 +51,11 @@ export interface GuidedFlow {
   /** Cliente creado o elegido en el flujo. */
   clientId?: string;
   clientLabel?: string;
+  /** Contexto elegido con botones (modo SELECT_AND_RECORD). */
+  selectedProjectId?: string;
+  selectedProjectLabel?: string;
+  selectedTaskId?: string;
+  selectedTaskLabel?: string;
   createdAt: number;
 }
 

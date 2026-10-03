@@ -25,10 +25,16 @@ import {
 import { isWithinWorkHours } from '../utils/time';
 import { listVisibleProjects } from '../services/resolve.service';
 import {
+  askClientSelection,
+  askForAudioOrText,
+  askNewTaskTitle,
+  askProjectSelection,
+  askTaskSelection,
   beginGuidedStart,
   chooseProject,
   handleClientName,
   handleProjectName,
+  startSelectedTask,
 } from '../services/guided-start.service';
 import { clearFlow, getFlow, startFlow, updateFlow } from '../services/guided-flow.service';
 import { MENU_KEYBOARD, menuText } from './menu';
@@ -189,6 +195,14 @@ async function handleSlashCommand(message: CommandInput, user: LinkedUser | null
       handled: true,
       text: `✅ Cuenta vinculada a <b>${pending.fullName}</b>.\nYa puedes enviar notas de voz para registrar tu tiempo. Escribe /ayuda para ver ejemplos.`,
     };
+  }
+
+  if (command === '/registrar' || command === '/grabar' || command === '/nuevo-registro') {
+    if (!user) {
+      return { handled: true, text: '⚠️ Vincula tu cuenta primero con <code>/telefono</code>.' };
+    }
+    const r = await askClientSelection(catalogContext(user));
+    return { handled: true, text: r.text, markup: r.markup };
   }
 
   if (command === '/menu') {
@@ -380,6 +394,15 @@ async function handleStartLike(
   return { text: reply.text, markup: reply.markup, started: reply.started };
 }
 
+/** Titulo de tarea a partir de un audio: se limpia la coletilla de intencion. */
+function cleanTitleForTask(text: string): string {
+  const limpio = text
+    .replace(/^\s*(iniciando|inicio|empiezo|empezar|comienzo|arranco|trabajando en|nueva tarea)\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (limpio.length >= 3 ? limpio : text.trim()).slice(0, 180);
+}
+
 /** Continua el alta guiada con el texto que acaba de escribir el usuario. */
 async function continueGuidedFlow(
   user: LinkedUser,
@@ -523,6 +546,39 @@ async function handleMessage(message: TgMessage, started: number): Promise<void>
       return;
     }
     await reply(chatId, `🎙 <i>${escapeForHtml(result.text)}</i>`);
+
+    // Si el trabajador eligió cliente/proyecto/tarea con botones, el audio se
+    // registra DIRECTAMENTE sobre esa tarea (el texto queda como descripción).
+    const flujoAudio = getFlow(user.id);
+    if (flujoAudio?.step === 'AWAIT_AUDIO' && flujoAudio.selectedTaskId) {
+      const res = await startSelectedTask(
+        { userId: user.id, roleKey: user.roleKey, timezone: user.timezone, source: 'TELEGRAM_VOICE' },
+        { taskId: flujoAudio.selectedTaskId, description: result.text },
+      );
+      await reply(chatId, res.text, { reply_markup: res.markup ?? MAIN_KEYBOARD });
+      await logInteraction({
+        userId: user.id,
+        telegramId,
+        chatId: String(chatId),
+        kind: 'VOICE',
+        transcript: result.text,
+        intent: 'START_SELECTED_TASK',
+        reply: res.text,
+        latencyMs: Date.now() - started,
+      });
+      return;
+    }
+
+    // Estaba creando una tarea nueva: el audio define su nombre.
+    if (flujoAudio?.step === 'ASK_PROJECT_NAME' && flujoAudio.mode === 'SELECT_AND_RECORD') {
+      const res = await startSelectedTask(
+        { userId: user.id, roleKey: user.roleKey, timezone: user.timezone, source: 'TELEGRAM_VOICE' },
+        { title: cleanTitleForTask(result.text), description: result.text },
+      );
+      await reply(chatId, res.text, { reply_markup: res.markup ?? MAIN_KEYBOARD });
+      return;
+    }
+
     await handleNaturalText(user, result.text, chatId, telegramId, 'VOICE', 'TELEGRAM_VOICE', started, message.message_id);
     return;
   }
@@ -601,6 +657,26 @@ async function handleNaturalText(
   // Si hay un alta guiada en curso, la respuesta del usuario es el nombre del
   // cliente o del proyecto (no una tarea nueva).
   const activeFlow = getFlow(user.id);
+  // Nombre de tarea nueva dentro del flujo de selección (paso 3 -> "Tarea nueva").
+  if (activeFlow?.mode === 'SELECT_AND_RECORD' && activeFlow.step === 'ASK_PROJECT_NAME') {
+    const res = await startSelectedTask(
+      { userId: user.id, roleKey: user.roleKey, timezone: user.timezone, source },
+      { title: text, description: undefined },
+    );
+    await reply(chatId, res.text, { reply_markup: res.markup ?? MAIN_KEYBOARD });
+    await logInteraction({
+      userId: user.id,
+      telegramId,
+      chatId: String(chatId),
+      kind,
+      rawText: text,
+      intent: 'CREATE_TASK',
+      reply: res.text,
+      latencyMs: Date.now() - started,
+    });
+    return;
+  }
+
   if (
     activeFlow &&
     (activeFlow.step === 'ASK_CLIENT_NAME' ||
@@ -805,9 +881,69 @@ async function handleCallback(query: TgUpdate['callback_query']): Promise<void> 
       await reply_(chatId, reply.text, reply.markup);
       break;
     }
+    case 'selclient': {
+      const cliente = await prisma.client.findUnique({ where: { id: value! } });
+      if (!cliente) {
+        await reply_(chatId, 'Ese cliente ya no existe.');
+        break;
+      }
+      const r = await askProjectSelection(catalogContext(user), cliente.id, cliente.name);
+      await reply_(chatId, r.text, r.markup);
+      break;
+    }
+    case 'selproject': {
+      const proyecto = await prisma.clientProject.findUnique({
+        where: { id: value! },
+        include: { client: true },
+      });
+      if (!proyecto) {
+        await reply_(chatId, 'Ese proyecto ya no existe.');
+        break;
+      }
+      const r = await askTaskSelection(catalogContext(user), proyecto.id, proyecto.name);
+      await reply_(chatId, r.text, r.markup);
+      break;
+    }
+    case 'seltask': {
+      const tarea = await prisma.task.findUnique({
+        where: { id: value! },
+        include: { project: { include: { client: true } } },
+      });
+      if (!tarea) {
+        await reply_(chatId, 'Esa tarea ya no existe.');
+        break;
+      }
+      const r = askForAudioOrText(
+        catalogContext(user),
+        { id: tarea.id, title: tarea.title, totalSeconds: tarea.totalSeconds, entryCount: tarea.entryCount },
+        tarea.project?.name ?? 'sin proyecto',
+        tarea.project?.client?.name ?? undefined,
+      );
+      await reply_(chatId, r.text, r.markup);
+      break;
+    }
+    case 'newtask': {
+      // Crear una tarea nueva dentro del proyecto ya elegido.
+      const flujo = getFlow(user.id);
+      const proyecto = flujo?.selectedProjectId
+        ? await prisma.clientProject.findUnique({ where: { id: flujo.selectedProjectId } })
+        : null;
+      if (!proyecto) {
+        await reply_(chatId, 'Se perdió el proyecto. Vuelve a empezar con /registrar.');
+        break;
+      }
+      const r = askNewTaskTitle(catalogContext(user), proyecto.name);
+      await reply_(chatId, r.text, r.markup);
+      break;
+    }
     case 'menu': {
       // Acciones del menu con botones.
       const accion = value ?? '';
+      if (accion === 'registrar') {
+        const r = await askClientSelection(catalogContext(user));
+        await reply_(chatId, r.text, r.markup);
+        break;
+      }
       if (accion === 'newtasktype') {
         const r = askNewTaskTypeName(catalogContext(user));
         await reply_(chatId, r.text, r.markup);

@@ -15,6 +15,7 @@ export interface BotCommand {
 
 /** Comandos visibles en el menu de Telegram (orden = orden en el menu). */
 export const BOT_COMMANDS: BotCommand[] = [
+  { command: 'registrar', description: '▶️ Elegir cliente, proyecto y tarea, y grabar el tiempo' },
   { command: 'nuevo', description: '➕ Crear cliente, proyecto o tipo de tarea' },
   { command: 'estado', description: '📊 Qué estás haciendo ahora y cuánto llevas' },
   { command: 'terminar', description: '⏹ Terminar la tarea y guardar el tiempo' },
