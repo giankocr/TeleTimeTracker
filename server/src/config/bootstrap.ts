@@ -391,6 +391,14 @@ export async function bootstrapDatabase(): Promise<void> {
     if (check.ok) console.log('✅ Esquema verificado');
 
     // Historial segun la propia base: permite diagnosticar desde /api/health.
+    //
+    // Solo aplica a MySQL (el runner propio escribe aqui). En SQLite las
+    // migraciones las aplica Prisma y su historial vive en `_prisma_migrations`,
+    // asi que esta lista queda vacia: no es un error.
+    //
+    // `statements = 0` significa que la migracion esta registrada pero NO se
+    // ejecuto (la adopto una version anterior). El arranque la trata como no
+    // verificada y la reejecuta; ver migrator.ts.
     try {
       const filas = (await db.$queryRawUnsafe(
         'SELECT `name`, `statements` FROM `_app_migrations`',
