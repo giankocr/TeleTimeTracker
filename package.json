@@ -12,7 +12,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "prisma:generate": "prisma generate --schema=server/prisma/schema.prisma",
+    "prisma:generate": "prisma generate --schema=${PRISMA_SCHEMA:-server/prisma/schema.prisma}",
+    "prisma:generate:mysql": "node scripts/generate-mysql-schema.mjs && PRISMA_SCHEMA=server/prisma/schema.mysql.prisma prisma generate --schema=server/prisma/schema.mysql.prisma",
+    "prisma:migrate:mysql": "prisma migrate deploy --schema=server/prisma/schema.mysql.prisma",
     "prisma:migrate": "prisma migrate deploy --schema=server/prisma/schema.prisma",
     "seed": "tsx server/prisma/seed.ts",
     "dev:server": "tsx watch server/src/index.ts",

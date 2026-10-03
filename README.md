@@ -378,13 +378,41 @@ OPENAI_API_KEY=<sk-...>                      # para transcribir notas de voz
 DEFAULT_TIMEZONE=America/Bogota
 ```
 
-### 5.4 Base de datos: SQLite (por defecto) o PostgreSQL
+### 5.4 Base de datos: SQLite (por defecto) o MySQL
 
-- **SQLite**: deja `DATABASE_URL` sin definir (o `file:/app/data/teletimetracker.db`). Cero configuración.
-- **PostgreSQL**:
-  1. Crea el servicio Postgres en EasyPanel.
-  2. En `server/prisma/schema.prisma` cambia `provider = "sqlite"` por `provider = "postgresql"`.
-  3. Define `DATABASE_URL=postgresql://usuario:password@postgres:5432/teletimetracker?schema=public`.
+El motor se detecta **por la forma de `DATABASE_URL`**: no hay que cambiar el `provider` del esquema ni reconstruir nada.
+
+| `DATABASE_URL` | Motor | Migraciones aplicadas |
+|---|---|---|
+| vacío o `file:/app/data/teletimetracker.db` | SQLite | `server/prisma/migrations` |
+| `mysql://…` | MySQL | `server/prisma/migrations.mysql` |
+
+**SQLite** (recomendado para 1 sola instancia): no definas `DATABASE_URL`. La base vive en el volumen `/app/data`.
+
+**MySQL** (si ya tienes el servicio):
+
+```env
+DATABASE_URL=mysql://USUARIO:PASSWORD@HOST:3306/NOMBRE_DB
+```
+
+- Dentro de EasyPanel, `HOST` es el **nombre del servicio** (p. ej. `mysql` o el que le pusiste), no la IP pública.
+- **Percent-encodea el password** si lleva caracteres especiales: `!`→`%21`, `@`→`%40`, `#`→`%23`, `$`→`%24`, `%`→`%25`, `:`→`%3A`, `/`→`%2F`. Sin esto la URL se parsea mal.
+- En el primer arranque se crean las 17 tablas y se siembra solo (roles, admin, tipos de tarea).
+
+> ⚠️ **PostgreSQL no está soportado de serie**: el SQL de las migraciones es específico del motor y solo se incluyen los juegos de SQLite y MySQL.
+
+#### Por qué hay un esquema aparte para MySQL
+
+El esquema base usa `provider = "sqlite"`, donde Prisma asigna `TEXT` (sin límite) a los campos `String`. En MySQL el valor por defecto es `VARCHAR(191)`, que **truncaría** campos que el sistema escribe más largos (transcripciones del NLU, descripciones de hasta 4000 caracteres…). Además MySQL no acepta tipos nativos con `provider = "sqlite"`.
+
+Por eso hay **un solo origen de verdad** (`server/prisma/schema.prisma`) y un generador que deriva el de MySQL:
+
+```bash
+node scripts/generate-mysql-schema.mjs          # crea server/prisma/schema.mysql.prisma
+node scripts/generate-mysql-schema.mjs --check  # falla si está desincronizado
+```
+
+El generador añade 83 anotaciones `@db.*` (por ejemplo `description String? @db.Text` y `permissions String @db.VarChar(600)`). Nota: los campos con `DEFAULT ''` **no pueden ser `TEXT`** en MySQL (error 1101), por eso `permissions` y `aliases` usan `VarChar` holgado.
 
 ### 5.5 Configurar el bot de Telegram
 
@@ -582,7 +610,7 @@ Consulta `.env.example` para la lista completa y comentada. Resumen:
 |---|---|---|
 | `PORT` / `HOST` | `8080` / `0.0.0.0` | Puerto y bind del contenedor |
 | `DATA_DIR` | `/app/data` | Carpeta del volumen persistente |
-| `DATABASE_URL` | vacío → SQLite | `file:/app/data/...` o `postgresql://...` |
+| `DATABASE_URL` | vacío → SQLite | `file:/app/data/...` o `mysql://usuario:password@host:3306/db` |
 | `AUTO_MIGRATE` / `AUTO_SEED` | `true` | Aplicar migraciones/seed al arrancar |
 | `JWT_SECRET` | — | **Obligatorio** cambiar en producción |
 | `JWT_EXPIRES_IN` / `REFRESH_EXPIRES_DAYS` | `12h` / `30` | Vida de los tokens |
@@ -619,5 +647,6 @@ El proyecto se validó de extremo a extremo:
 - **Acceso con Telegram**: firma válida → JWT + RBAC; firma manipulada, autorización de 2 h y Telegram sin vincular → rechazados (401/403) y auditados. Formatos de hash `#tgAuthResult` y campos directos verificados.
 - **Widget oficial (legacy)**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
 - **Login OIDC (vigente)**: `id_token` válido → sesión y RBAC; firma ajena, `aud` o `iss` incorrectos, token expirado y `alg: none` → rechazados con el código de error correspondiente; `nonce` verificado; el `phone_number` del token se guarda en el perfil; cabecera `Cross-Origin-Opener-Policy: same-origin-allow-popups` presente (sin ella el popup de Telegram no comunica).
+- **MySQL**: verificado contra un servidor MySQL 8.4 real: migración inicial (17 tablas), seed automático, arranque de la app y flujo completo de API (login, RBAC, CRUD, cronómetro start→pause→resume→stop con pausas descontadas, registro manual, dashboard, CSV, auditoría). Tipos nativos aplicados (`description` → `TEXT`, `permissions` → `VARCHAR(600)`).
 - **Acceso con teléfono + OTP**: teléfono no registrado (404), código incorrecto (401), anti-spam de 60 s (429), código correcto (200 con sesión) y reutilización del mismo código (401).
 - **Vinculación desde el bot**: compartir el número sin cuenta → solicitud PENDING visible para el admin; aprobación → cuenta creada con rol y Telegram vinculado; segundo intento → vinculación automática; contacto ajeno → rechazado.

@@ -69,7 +69,9 @@ export const resolveDatabaseUrl = (raw: string | undefined): string => {
   return `file:${path.join(DATA_DIR, name)}`;
 };
 
-const resolvedDbUrl = resolveDatabaseUrl(process.env.DATABASE_URL);
+// Se recorta el valor: al pegar la URL en un panel (EasyPanel, etc.) es facil
+// que se cuelen espacios o saltos de linea, y Prisma falla con un error opaco.
+const resolvedDbUrl = resolveDatabaseUrl((process.env.DATABASE_URL ?? '').trim());
 
 // Se normaliza en process.env para que los procesos hijos (prisma CLI, seed)
 // usen exactamente la misma base de datos que el servidor.

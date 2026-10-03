@@ -1,0 +1,394 @@
+// ⚠️ ARCHIVO GENERADO — no editar a mano.
+// Se crea con: node scripts/generate-mysql-schema.mjs
+// Origen de verdad: server/prisma/schema.prisma
+// Usado por: prisma migrate (perfil MySQL). Ver README → Base de datos.
+
+// ============================================================================
+//  TeleTimeTracker - Esquema de Base de Datos
+//  Motor: SQLite (por defecto, volumen persistente) o PostgreSQL.
+//  Para Postgres: cambiar provider a "postgresql" y DATABASE_URL.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+//  RBAC: Rol -> Permisos (lista separada por comas)
+// ---------------------------------------------------------------------------
+model Role {
+  id          String   @id @default(cuid()) @db.VarChar(32)
+  key         String   @unique // ADMIN | MANAGER | USER  (o roles custom) @db.VarChar(40)
+  name        String @db.VarChar(80)
+  description String? @db.Text
+  // Lista de permisos separados por coma. "*" = superusuario.
+  permissions String   @default("") @db.VarChar(600)
+  isSystem    Boolean  @default(false) // los roles de sistema no se pueden borrar
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users User[]
+
+  @@map("roles")
+}
+
+// ---------------------------------------------------------------------------
+//  Usuarios (trabajadores / managers / admins)
+// ---------------------------------------------------------------------------
+model User {
+  id           String    @id @default(cuid()) @db.VarChar(32)
+  email        String    @unique @db.VarChar(160)
+  passwordHash String @db.VarChar(100)
+  fullName     String @db.VarChar(120)
+  isActive     Boolean   @default(true)
+  // Rol RBAC
+  roleId       String
+  role         Role      @relation(fields: [roleId], references: [id])
+  // Manager directo (jerarquia para reportes de equipo)
+  managerId    String?
+  manager      User?     @relation("TeamHierarchy", fields: [managerId], references: [id], onDelete: SetNull)
+  reports      User[]    @relation("TeamHierarchy")
+
+  // --- Vinculacion con Telegram ---
+  telegramId       String?   @unique // chat/user id numerico de Telegram @db.VarChar(32)
+  telegramUsername String? @db.VarChar(80)
+  telegramLinkedAt DateTime?
+  // Codigo efimero que el usuario envia al bot para vincular su cuenta
+  telegramLinkCode String?   @unique @db.VarChar(16)
+  telegramLinkExp  DateTime?
+
+  // --- Telefono y acceso con codigo de un solo uso (OTP por el bot) ---
+  phone           String?   @unique // normalizado E.164 (ej. +573001234567) @db.VarChar(20)
+  phoneVerifiedAt DateTime?
+  otpCodeHash     String? // SHA-256 del codigo de 6 digitos (nunca en claro) @db.VarChar(64)
+  otpExpiresAt    DateTime?
+  otpAttempts     Int       @default(0)
+  otpLastSentAt   DateTime?
+
+  // --- GitHub ---
+  githubUsername String? @db.VarChar(80)
+  githubToken    String? // token personal cifrado (AES-256-GCM) @db.VarChar(300)
+
+  // --- Jornada laboral (para alertas de inactividad) ---
+  workDays    String  @default("1,2,3,4,5") // 0=Dom ... 6=Sab @db.VarChar(20)
+  workStart   String  @default("09:00") @db.VarChar(5)
+  workEnd     String  @default("18:00") @db.VarChar(5)
+  timezone    String  @default("America/Bogota") @db.VarChar(64)
+  idleAlertMin Int    @default(45) // minutos sin tarea corriendo antes de alertar
+  dailyDigest Boolean @default(true)
+
+  locale          String    @default("es") @db.VarChar(8)
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  timeEntries     TimeEntry[]
+  pendingTasks    PendingTask[]
+  sessions        AuthSession[]
+  projectMembers  ProjectMember[]
+  clientMembers   ClientMember[]
+  alertLogs       AlertLog[]
+  auditLogs       AuditLog[]
+  botMessages     BotMessage[]
+
+  @@index([roleId])
+  @@index([managerId])
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+//  Clientes
+// ---------------------------------------------------------------------------
+model Client {
+  id        String   @id @default(cuid()) @db.VarChar(32)
+  name      String   @unique @db.VarChar(120)
+  code      String?  @unique @db.VarChar(40)
+  notes     String? @db.Text
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projects ClientProject[]
+  members  ClientMember[]
+  entries  TimeEntry[]
+
+  @@map("clients")
+}
+
+model ClientMember {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, userId])
+  @@map("client_members")
+}
+
+// ---------------------------------------------------------------------------
+//  Proyectos (pertenecen a un cliente) y tipos de tarea (globales)
+// ---------------------------------------------------------------------------
+model ClientProject {
+  id             String   @id @default(cuid()) @db.VarChar(32)
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name           String @db.VarChar(120)
+  description    String? @db.Text
+  isActive       Boolean  @default(true)
+  // Integracion GitHub: "owner/repo" o lista separada por comas
+  githubRepos    String? @db.Text
+  // Presupuesto de horas (para reportes de desvio)
+  budgetHours    Float?
+  hourlyRate     Float?
+  // Minutos de gracia sobre la jornada antes de alertar inactividad
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  members  ProjectMember[]
+  entries  TimeEntry[]
+
+  @@unique([clientId, name])
+  @@index([clientId])
+  @@map("projects")
+}
+
+model ProjectMember {
+  id        String        @id @default(cuid()) @db.VarChar(32)
+  projectId String
+  project   ClientProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Rol dentro del proyecto: OWNER | MEMBER | VIEWER
+  role      String        @default("MEMBER") @db.VarChar(16)
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+model TaskType {
+  id        String   @id @default(cuid()) @db.VarChar(32)
+  name      String   @unique // "Maquetacion", "Reunion", "Soporte"... @db.VarChar(60)
+  // Alias separados por coma para que el NLU los reconozca en notas de voz
+  aliases   String   @default("") @db.VarChar(300)
+  color     String   @default("#6366f1") @db.VarChar(9)
+  billable  Boolean  @default(true)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  entries TimeEntry[]
+
+  @@map("task_types")
+}
+
+// ---------------------------------------------------------------------------
+//  TIEMPOS: TimeEntry = un segmento trabajado (un "lap") sobre un proyecto.
+//  Regla de negocio: un usuario solo puede tener un segmento RUNNING a la vez.
+//  Cambiar de tarea = cerrar el segmento actual (switchReason=SWITCH) y abrir otro.
+// ---------------------------------------------------------------------------
+model TimeEntry {
+  id        String        @id @default(cuid()) @db.VarChar(32)
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId String?
+  project   ClientProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  clientId  String?
+  client    Client?       @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  taskTypeId String?
+  taskType  TaskType?     @relation(fields: [taskTypeId], references: [id], onDelete: SetNull)
+
+  // Texto libre tal como lo dijo el usuario (voz transcrita o texto)
+  title       String? @db.VarChar(180)
+  description String? @db.Text
+
+  startedAt   DateTime  @default(now())
+  endedAt     DateTime?
+  // Segundos trabajados acumulados (excluye pausas)
+  durationSec Int       @default(0)
+  billable    Boolean   @default(true)
+
+  // RUNNING | PAUSED | FINISHED | CANCELLED
+  status      String    @default("RUNNING") @db.VarChar(16)
+  // Como se origino: TELEGRAM_VOICE | TELEGRAM_TEXT | TELEGRAM_BUTTON | WEB | API
+  source      String    @default("TELEGRAM_TEXT") @db.VarChar(24)
+  // Por que se cerro: SWITCH | FINISH | PAUSE | IDLE_TIMEOUT | MANUAL_WEB
+  closeReason String? @db.VarChar(24)
+
+  // Enriquecimiento GitHub (JSON serializado): commits/PRs del rango
+  githubData  String? @db.Text
+  githubSyncedAt DateTime?
+
+  // Otros usuarios han editado este registro (auditoria ligera)
+  editedById  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  pauses      Pause[]
+  tags        EntryTag[]
+
+  @@index([userId, status])
+  @@index([userId, startedAt])
+  @@index([projectId, startedAt])
+  @@index([startedAt])
+  @@map("time_entries")
+}
+
+model Pause {
+  id          String    @id @default(cuid()) @db.VarChar(32)
+  entryId     String
+  entry       TimeEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  startedAt   DateTime  @default(now())
+  endedAt     DateTime?
+  durationSec Int       @default(0)
+  reason      String? @db.Text
+
+  @@index([entryId])
+  @@map("pauses")
+}
+
+model EntryTag {
+  id      String    @id @default(cuid()) @db.VarChar(32)
+  entryId String
+  entry   TimeEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  tag     String @db.VarChar(60)
+
+  @@unique([entryId, tag])
+  @@map("entry_tags")
+}
+
+// ---------------------------------------------------------------------------
+//  Tareas pendientes / backlog por usuario (alimenta la alerta diaria)
+// ---------------------------------------------------------------------------
+model PendingTask {
+  id          String   @id @default(cuid()) @db.VarChar(32)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId   String?
+  title       String @db.VarChar(200)
+  notes       String? @db.Text
+  // LOW | NORMAL | HIGH
+  priority    String   @default("NORMAL") @db.VarChar(10)
+  dueDate     DateTime?
+  isDone      Boolean  @default(false)
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, isDone])
+  @@map("pending_tasks")
+}
+
+// ---------------------------------------------------------------------------
+//  Configuracion global (key-value; los secretos se cifran con SETTINGS_ENC_KEY)
+// ---------------------------------------------------------------------------
+model SystemSetting {
+  key       String   @id @db.VarChar(80)
+  value     String @db.Text
+  isSecret  Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+// ---------------------------------------------------------------------------
+//  Sesiones JWT (permite revocar tokens: logout, reseteo de clave)
+// ---------------------------------------------------------------------------
+model AuthSession {
+  id           String   @id @default(cuid()) @db.VarChar(32)
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshHash  String   @unique @db.VarChar(64)
+  userAgent    String? @db.VarChar(255)
+  ip           String? @db.VarChar(64)
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@map("auth_sessions")
+}
+
+// ---------------------------------------------------------------------------
+//  Alertas enviadas (anti-spam: no repetir la misma alerta al mismo usuario)
+// ---------------------------------------------------------------------------
+model AlertLog {
+  id       String   @id @default(cuid()) @db.VarChar(32)
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // IDLE | DAILY_DIGEST | WEEKLY_SUMMARY
+  type     String @db.VarChar(24)
+  sentAt   DateTime @default(now())
+  payload  String? @db.Text
+
+  @@index([userId, type, sentAt])
+  @@map("alert_logs")
+}
+
+// ---------------------------------------------------------------------------
+//  Auditoria de acciones del panel
+// ---------------------------------------------------------------------------
+model AuditLog {
+  id        String   @id @default(cuid()) @db.VarChar(32)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String @db.VarChar(64)
+  entity    String? @db.VarChar(32)
+  entityId  String? @db.VarChar(64)
+  metadata  String? @db.Text
+  ip        String? @db.VarChar(64)
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+//  Log crudo de mensajes del bot (trazabilidad y debugging del NLU)
+// ---------------------------------------------------------------------------
+model BotMessage {
+  id         String   @id @default(cuid()) @db.VarChar(32)
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  telegramId String? @db.VarChar(32)
+  chatId     String? @db.VarChar(32)
+  kind       String   // TEXT | VOICE | COMMAND | CALLBACK @db.VarChar(16)
+  rawText    String? @db.Text
+  transcript String? @db.Text
+  intent     String? @db.VarChar(24)
+  entities   String? @db.Text
+  reply      String? @db.Text
+  ok         Boolean  @default(true)
+  error      String? @db.Text
+  latencyMs  Int?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("bot_messages")
+}
+
+// ---------------------------------------------------------------------------
+//  Solicitudes de acceso desde el bot: alguien comparte su numero pero todavia
+//  no tiene cuenta. Un administrador lo aprueba creando el usuario.
+// ---------------------------------------------------------------------------
+model BotContact {
+  id            String   @id @default(cuid()) @db.VarChar(32)
+  telegramId    String   @unique @db.VarChar(32)
+  phone         String @db.VarChar(20)
+  firstName     String? @db.VarChar(80)
+  lastName      String? @db.VarChar(80)
+  username      String? @db.VarChar(80)
+  // PENDING | LINKED | REJECTED
+  status        String   @default("PENDING") @db.VarChar(16)
+  // Usuario con el que quedo vinculado (si aplica)
+  userId        String?
+  note          String? @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status])
+  @@map("bot_contacts")
+}
