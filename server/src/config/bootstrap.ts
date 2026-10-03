@@ -27,10 +27,20 @@ const PRISMA_CLI = path.resolve(process.cwd(), 'node_modules/prisma/build/index.
 const SEED_FILE = path.resolve(process.cwd(), 'server/prisma/seed.ts');
 
 /** Resultado de la comprobacion del esquema, para /health y los logs. */
-export const schemaState: { ready: boolean; missing: string[]; checked: boolean } = {
+export const schemaState: {
+  ready: boolean;
+  missing: string[];
+  checked: boolean;
+  /** Ultimo error al aplicar una migracion (para diagnostico desde /api/health). */
+  lastMigrationError: string | null;
+  /** Migraciones y su estado segun el historial de la propia base. */
+  migrations: { name: string; applied: boolean; statements: number }[];
+} = {
   ready: false,
   missing: [],
   checked: false,
+  lastMigrationError: null,
+  migrations: [],
 };
 
 export interface DbProfile {
@@ -214,6 +224,9 @@ async function migrateWithRunner(profile: DbProfile): Promise<void> {
 
     const result = await runMigrations({
       migrationsDir: profile.migrations,
+      onStatementError: (migracion, error) => {
+        schemaState.lastMigrationError = `${migracion}: ${error.replace(/\s+/g, ' ').slice(0, 300)}`;
+      },
       execute: async (sql) => {
         // Se aplica de forma IDEMPOTENTE: si la base ya tiene una tabla, columna
         // o indice, esa sentencia se salta. Asi una migracion se puede reejecutar
@@ -366,6 +379,20 @@ export async function bootstrapDatabase(): Promise<void> {
     schemaState.ready = check.ok;
     schemaState.missing = check.missing;
     if (check.ok) console.log('✅ Esquema verificado');
+
+    // Historial segun la propia base: permite diagnosticar desde /api/health.
+    try {
+      const filas = (await db.$queryRawUnsafe(
+        'SELECT `name`, `statements` FROM `_app_migrations`',
+      )) as Array<{ name: string; statements: bigint | number }>;
+      schemaState.migrations = filas.map((f) => ({
+        name: f.name,
+        applied: true,
+        statements: Number(f.statements ?? 0),
+      }));
+    } catch {
+      schemaState.migrations = [];
+    }
   } catch (err) {
     console.warn('[bootstrap] no se pudo verificar el esquema:', (err as Error).message);
   }

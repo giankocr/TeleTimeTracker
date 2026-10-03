@@ -93,7 +93,15 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.get('/api/health', async (_request, reply) => {
     try {
       await prisma.$queryRaw`SELECT 1`;
-      return reply.send({ status: 'ok', db: 'up', mode: env.TELEGRAM_MODE });
+      return reply.send({
+        status: 'ok',
+        db: 'up',
+        mode: env.TELEGRAM_MODE,
+        // Diagnostico sin acceso a los logs del contenedor.
+        schema: { ready: schemaState.ready, missing: schemaState.missing },
+        migrations: schemaState.migrations,
+        lastMigrationError: schemaState.lastMigrationError,
+      });
     } catch (err) {
       return reply.code(503).send({ status: 'degraded', db: 'down', error: (err as Error).message });
     }
