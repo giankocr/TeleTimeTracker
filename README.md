@@ -184,6 +184,8 @@ Ejemplos reales que el sistema entiende:
 | "Reporte de hoy" / "¿Cuántas horas hice ayer?" | `REPORT` | Resumen de horas |
 | "¿Qué tengo pendiente?" | `AGENDA` | Backlog + tarea en curso |
 
+**Formatos de audio aceptados** — Groq es estricto: el archivo debe llegar con un `Content-Type` reconocible. Telegram entrega las notas de voz como **Opus en contenedor OGG** y a menudo con extensión `.oga`, que no está en la lista aceptada (`flac mp3 mp4 mpeg mpga m4a ogg opus wav webm`). Además el SDK **no deduce el MIME del nombre del archivo**: si no se le pasa un tipo explícito, el `Content-Type` de la parte multipart queda vacío y Groq responde `400 file must be one of the following types`. Por eso `resolveAudioFile()` normaliza nombre y MIME antes de subir el audio (`.oga` → `audio.ogg` / `audio/ogg`).
+
 **Proveedores de IA** — se elige solo, con el **mismo SDK** porque la API de Groq es compatible con la de OpenAI:
 
 | Proveedor | Transcripción | Interpretación (NLU) | Cuándo se usa |
@@ -663,6 +665,7 @@ El proyecto se validó de extremo a extremo:
 - Pruebas de API: login, RBAC, CRUD de clientes/proyectos/usuarios, cronómetro (start → pause → resume → stop con pausas descontadas), registro manual, dashboard, CSV y auditoría.
 - **Conversación real por webhook de Telegram**: vinculación con código, inicio por lenguaje natural, pausa, reanudar, cambio de tarea, fin de tarea, reporte, pendientes y botones inline.
 - **Nota de voz**: descarga del audio → transcripción → NLU → apertura y cierre del registro con proyecto, cliente y tipo de tarea correctos.
+- **Formatos de audio**: verificado que los 8 escenarios de entrada (nota de voz `.oga`, sin extensión, `.ogg`, `.mp3`, `.m4a`, `.webm`, MIME sin extensión y `.amr`) se suben con un nombre y `Content-Type` que Groq acepta.
 - **Groq**: cliente apuntando a `https://api.groq.com/openai/v1` con modelo `whisper-large-v3` (verificado) y NLU con `llama-3.1-8b-instant`; la cadena completa de nota de voz crea el registro correcto. Clave inválida → `401 Invalid API Key` detectado por la prueba de claves del panel.
 - **Acceso con Telegram**: firma válida → JWT + RBAC; firma manipulada, autorización de 2 h y Telegram sin vincular → rechazados (401/403) y auditados. Formatos de hash `#tgAuthResult` y campos directos verificados.
 - **Widget oficial (legacy)**: POST form-urlencoded con firma válida → HTML con `accessToken`/`refreshToken` y `postMessage` al panel; Telegram sin vincular → HTML de error legible; firma manipulada → rechazado sin sesión; `GET` con query params → también funciona.
