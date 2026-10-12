@@ -30,6 +30,8 @@ const NAV: Array<{ section: string; items: NavItem[] }> = [
       { to: '/proyectos', label: 'Proyectos', icon: '📁', permission: 'projects:read' },
       { to: '/tareas', label: 'Tareas', icon: '🗂', permission: 'entries:read:own' },
       { to: '/registros', label: 'Registros de tiempo', icon: '⏱', permission: 'entries:read:own' },
+      // Control de cobro: qué está pendiente, qué se facturó y qué se cobró.
+      { to: '/facturacion', label: 'Facturación', icon: '💵', permission: 'billing:read' },
     ],
   },
   {
@@ -110,7 +112,11 @@ export default function Layout({ children }: { children: ReactNode }) {
       ? 'Registros de tiempo'
       : location.pathname.startsWith('/tareas')
         ? 'Tareas'
-        : 'Panel');
+        : location.pathname.startsWith('/reporte-cliente')
+          ? 'Reporte del cliente'
+          : location.pathname.startsWith('/facturacion')
+            ? 'Facturación'
+            : 'Panel');
 
   return (
     <div className="app-shell">

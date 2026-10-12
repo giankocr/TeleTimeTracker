@@ -17,6 +17,7 @@ import roleRoutes from './routes/roles.routes';
 import clientRoutes from './routes/clients.routes';
 import entryRoutes from './routes/entries.routes';
 import reportRoutes from './routes/reports.routes';
+import billingRoutes from './routes/billing.routes';
 import settingsRoutes from './routes/settings.routes';
 import telegramRoutes from './routes/telegram.routes';
 
@@ -118,6 +119,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(clientRoutes, { prefix: '/api' }); // /api/clients, /api/projects, /api/task-types
   await app.register(entryRoutes, { prefix: '/api/entries' });
   await app.register(reportRoutes, { prefix: '/api/reports' });
+  // Control de facturación y reporte entregable al cliente.
+  await app.register(billingRoutes, { prefix: '/api/billing' });
   await app.register(settingsRoutes, { prefix: '/api/settings' });
   await app.register(telegramRoutes, { prefix: '/api/telegram' });
 

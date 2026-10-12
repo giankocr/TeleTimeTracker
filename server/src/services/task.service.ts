@@ -197,6 +197,15 @@ export interface TaskSummary {
   estimatedHours: number | null;
   priority: string;
   dueDate: string | null;
+  /** Nº de tiquete con el que lo identifica el cliente. */
+  reference: string | null;
+  hourlyRate: number | null;
+  // --- Control de facturación ---
+  billingStatus: string;
+  billedAt: string | null;
+  paidAt: string | null;
+  invoiceRef: string | null;
+  billedAmount: number | null;
 }
 
 /** Resumen de tareas para el panel y el bot. */
@@ -205,6 +214,8 @@ export async function listTasks(params: {
   projectId?: string;
   clientId?: string;
   status?: string;
+  billingStatus?: string;
+  invoiceRef?: string;
   search?: string;
   take?: number;
   skip?: number;
@@ -214,8 +225,16 @@ export async function listTasks(params: {
     ...(params.projectId ? { projectId: params.projectId } : {}),
     ...(params.clientId ? { clientId: params.clientId } : {}),
     ...(params.status ? { status: params.status } : {}),
+    ...(params.billingStatus ? { billingStatus: params.billingStatus } : {}),
+    ...(params.invoiceRef ? { invoiceRef: params.invoiceRef } : {}),
     ...(params.search
-      ? { OR: [{ title: { contains: params.search } }, { description: { contains: params.search } }] }
+      ? {
+          OR: [
+            { title: { contains: params.search } },
+            { description: { contains: params.search } },
+            { reference: { contains: params.search } },
+          ],
+        }
       : {}),
   };
 
@@ -256,6 +275,13 @@ export async function listTasks(params: {
       estimatedHours: t.estimatedHours,
       priority: t.priority,
       dueDate: t.dueDate?.toISOString() ?? null,
+      reference: t.reference,
+      hourlyRate: t.hourlyRate,
+      billingStatus: t.billingStatus,
+      billedAt: t.billedAt?.toISOString() ?? null,
+      paidAt: t.paidAt?.toISOString() ?? null,
+      invoiceRef: t.invoiceRef,
+      billedAmount: t.billedAmount,
     })),
   };
 }

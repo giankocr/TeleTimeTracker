@@ -69,6 +69,11 @@ const NATIVE_TYPES = {
     description: 'Text',
     status: 'VarChar(16)',
     priority: 'VarChar(10)',
+    // Nº de tiquete del cliente, estado de facturación y nº de factura que
+    // agrupa varias tareas. Se filtran e indexan, asi que no pueden ser TEXT.
+    reference: 'VarChar(80)',
+    billingStatus: 'VarChar(16)',
+    invoiceRef: 'VarChar(60)',
   },
   TaskType: { name: 'VarChar(60)', aliases: 'VarChar(300)', color: 'VarChar(9)' },
 

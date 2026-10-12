@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatDateTime, formatHours, formatSeconds } from '../lib/format';
+import { billingBadge, billingLabel } from '../lib/billing';
 import { Alert, Badge, Card, Empty, Field, Modal, Spinner, StatCard, useToast } from '../components/ui';
 import { TaskDeleteModal } from '../components/TaskDeleteModal';
 
@@ -33,6 +34,10 @@ const EMPTY_FORM = {
   estimatedHours: '',
   priority: 'NORMAL',
   dueDate: '',
+  // Nº de tiquete con el que el cliente identifica el trabajo, y tarifa propia
+  // de esta tarea (si difiere de la del proyecto).
+  reference: '',
+  hourlyRate: '',
 };
 
 /** Convierte el ISO de `dueDate` a lo que espera un <input type="date">. */
@@ -54,6 +59,13 @@ interface TaskRow {
   estimatedHours: number | null;
   priority: string;
   dueDate: string | null;
+  /** Nº de tiquete del cliente. */
+  reference: string | null;
+  hourlyRate: number | null;
+  billingStatus: string;
+  billedAt: string | null;
+  paidAt: string | null;
+  invoiceRef: string | null;
 }
 
 export default function TasksPage() {
@@ -159,6 +171,8 @@ export default function TasksPage() {
         estimatedHours: form.estimatedHours ? Number(form.estimatedHours) : null,
         priority: form.priority,
         dueDate: form.dueDate ? new Date(form.dueDate).toISOString() : null,
+        reference: form.reference.trim() || null,
+        hourlyRate: form.hourlyRate ? Number(form.hourlyRate) : null,
       };
       if (id) await api.patch(`/tasks/${id}`, payload);
       else await api.post('/tasks', payload);
@@ -189,6 +203,8 @@ export default function TasksPage() {
         estimatedHours: t.estimatedHours != null ? String(t.estimatedHours) : '',
         priority: t.priority ?? 'NORMAL',
         dueDate: fechaParaInput(t.dueDate),
+        reference: t.reference ?? '',
+        hourlyRate: t.hourlyRate != null ? String(t.hourlyRate) : '',
       });
       setEditing({ id: t.id, title: t.title });
     } catch (err) {
@@ -250,6 +266,28 @@ export default function TasksPage() {
         </Field>
         <Field label="Fecha límite">
           <input className="input" type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
+        </Field>
+        <Field label="Nº de tiquete" hint="Opcional. Con lo que tu cliente identifica el trabajo: #4521, JIRA-123…">
+          <input
+            className="input"
+            value={form.reference}
+            onChange={(e) => setForm({ ...form, reference: e.target.value })}
+            placeholder="#4521"
+          />
+        </Field>
+        <Field
+          label="Tarifa por hora"
+          hint="Opcional, en la moneda de Ajustes. Si está vacía se usa la del proyecto y, si tampoco, la del cliente."
+        >
+          <input
+            className="input"
+            type="number"
+            min="0"
+            step="any"
+            value={form.hourlyRate}
+            onChange={(e) => setForm({ ...form, hourlyRate: e.target.value })}
+            placeholder="80000"
+          />
         </Field>
       </div>
 
@@ -324,6 +362,7 @@ export default function TasksPage() {
                   <th className="right" title="Registros de tiempo de esta tarea">Registros</th>
                   <th className="right">Tiempo</th>
                   <th>Estado</th>
+                  <th>Facturación</th>
                   <th className="right"></th>
                 </tr>
               </thead>
@@ -332,7 +371,10 @@ export default function TasksPage() {
                   <tr key={t.id}>
                     <td>
                       <div className="stack-sm" style={{ gap: 2, maxWidth: 320 }}>
-                        <strong>{t.title}</strong>
+                        <strong>
+                          {t.reference ? <span className="ticket-ref">{t.reference}</span> : null}
+                          {t.title}
+                        </strong>
                         <span className="tiny muted-2">
                           {t.taskTypeName ?? 'sin tipo'}
                           {t.priority !== 'NORMAL' ? ` · prioridad ${PRIORITY_LABEL[t.priority] ?? t.priority}` : ''}
@@ -356,6 +398,15 @@ export default function TasksPage() {
                     </td>
                     <td>
                       <Badge kind={STATUS_KIND[t.status]}>{t.statusLabel}</Badge>
+                    </td>
+                    <td>
+                      <Badge kind={billingBadge(t.billingStatus)}>{billingLabel(t.billingStatus)}</Badge>
+                      {t.invoiceRef ? (
+                        <>
+                          <br />
+                          <span className="tiny muted-2">{t.invoiceRef}</span>
+                        </>
+                      ) : null}
                     </td>
                     <td>
                       <div className="td-actions">
@@ -414,6 +465,12 @@ export default function TasksPage() {
         >
           <div className="card" style={{ padding: 14 }}>
             <div className="stack-sm" style={{ gap: 4 }}>
+              {detail.task.reference ? (
+                <span className="small">
+                  <span className="ticket-ref">{detail.task.reference}</span>
+                  <span className="muted-2">Nº de tiquete</span>
+                </span>
+              ) : null}
               <span className="small">
                 {detail.task.projectName ?? 'sin proyecto'} · {detail.task.clientName ?? 'sin cliente'} ·{' '}
                 {detail.task.taskTypeName ?? 'sin tipo'}
@@ -421,6 +478,19 @@ export default function TasksPage() {
               <span className="small">
                 <b>{formatSeconds(detail.task.totalSeconds)}</b> acumulados en{' '}
                 <b>{detail.task.entryCount}</b> registro(s) de tiempo
+              </span>
+              <span className="small">
+                Cobro: <Badge kind={billingBadge(detail.task.billingStatus)}>{billingLabel(detail.task.billingStatus)}</Badge>
+                {detail.task.invoiceRef ? <span className="muted-2"> · factura {detail.task.invoiceRef}</span> : null}
+                {detail.task.billedAt ? (
+                  <span className="muted-2"> · facturada el {formatDateTime(detail.task.billedAt)}</span>
+                ) : null}
+                {detail.task.paidAt ? (
+                  <span className="muted-2"> · pagada el {formatDateTime(detail.task.paidAt)}</span>
+                ) : null}
+                {detail.task.billedAmount != null ? (
+                  <span className="muted-2"> · importe {detail.task.billedAmount}</span>
+                ) : null}
               </span>
               <span className="tiny muted-2">
                 Primera vez: {detail.task.firstWorkedAt ? formatDateTime(detail.task.firstWorkedAt) : '—'} · Última:{' '}

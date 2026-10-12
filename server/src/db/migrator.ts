@@ -168,6 +168,8 @@ export async function verifySchema(
     const tiene = (tabla: string, col: string) =>
       columnas.some((k) => String(k.t).toLowerCase() === tabla && String(k.c).toLowerCase() === col);
     if (!tiene('time_entries', 'taskid')) missing.push('columna:time_entries.taskId');
+    // Control de facturación (reporte entregable al cliente).
+    if (!tiene('tasks', 'billingstatus')) missing.push('columna:tasks.billingStatus');
   } else {
     // SQLite: sqlite_master para tablas y PRAGMA para columnas.
     const tablas = (await query(
@@ -180,6 +182,13 @@ export async function verifySchema(
     if (existentes.has('time_entries')) {
       const cols = (await query('PRAGMA table_info(time_entries)')) as Array<{ name: string }>;
       if (!cols.some((c) => String(c.name).toLowerCase() === 'taskid')) missing.push('columna:time_entries.taskId');
+    }
+    // Control de facturación (reporte entregable al cliente).
+    if (existentes.has('tasks')) {
+      const cols = (await query('PRAGMA table_info(tasks)')) as Array<{ name: string }>;
+      if (!cols.some((c) => String(c.name).toLowerCase() === 'billingstatus')) {
+        missing.push('columna:tasks.billingStatus');
+      }
     }
   }
 

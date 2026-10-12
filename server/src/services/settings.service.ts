@@ -29,6 +29,10 @@ export const SETTING_KEYS = {
   WORK_END: 'work.default_end',
   TIMEZONE: 'work.default_timezone',
   COMPANY_NAME: 'ui.company_name',
+  /** NIT / RUC / RFC de la empresa: aparece en el reporte que se entrega al cliente. */
+  COMPANY_TAX_ID: 'ui.company_tax_id',
+  /** Moneda en la que se valoran las horas facturadas (codigo ISO 4217). */
+  BILLING_CURRENCY: 'billing.currency',
   /**
    * 'oidc'  -> libreria oficial telegram-login.js (popup) + id_token  [RECOMENDADO]
    * 'widget'-> widget iframe legacy (HMAC + /setdomain)  [en desuso]
@@ -68,6 +72,9 @@ const DEFAULTS: Record<string, string> = {
   [SETTING_KEYS.WORK_END]: '18:00',
   [SETTING_KEYS.TIMEZONE]: env.DEFAULT_TIMEZONE,
   [SETTING_KEYS.COMPANY_NAME]: 'TeleTimeTracker',
+  [SETTING_KEYS.COMPANY_TAX_ID]: '',
+  // Por defecto COP: el panel esta en es-CO y no lleva decimales.
+  [SETTING_KEYS.BILLING_CURRENCY]: 'COP',
   [SETTING_KEYS.TELEGRAM_LOGIN_MODE]: 'oidc',
   [SETTING_KEYS.ENTRIES_ALLOW_HARD_DELETE]: 'true',
   [SETTING_KEYS.WELCOME_MESSAGE]:

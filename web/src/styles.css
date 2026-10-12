@@ -283,6 +283,91 @@ tbody tr:hover { background: rgba(99, 102, 241, 0.06); }
 .toast-error { border-color: rgba(239, 68, 68, 0.5); }
 .toast-success { border-color: rgba(34, 197, 94, 0.5); }
 
+/* --------------------------------------------------------------- facturación */
+/* Barra de acciones en grupo: aparece al seleccionar tiquetes. */
+.bulk-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 14px; border-radius: var(--radius-sm);
+  border: 1px solid rgba(99, 102, 241, 0.5);
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.2), rgba(34, 211, 238, 0.1));
+}
+.bulk-count { font-weight: 650; }
+.col-check { width: 34px; }
+tr.row-selected { background: rgba(99, 102, 241, 0.12); }
+tr.row-selected:hover { background: rgba(99, 102, 241, 0.16); }
+.money { font-variant-numeric: tabular-nums; }
+.cell-ticket { min-width: 220px; max-width: 340px; }
+.cell-ticket .ticket-ref {
+  display: inline-block; margin-right: 6px; padding: 1px 7px; border-radius: 6px;
+  background: rgba(99, 102, 241, 0.16); border: 1px solid rgba(99, 102, 241, 0.35);
+  font-size: 0.72rem; font-weight: 650; color: #a5b4fc; white-space: nowrap;
+}
+
+/* -------------------------------------------- reporte imprimible del cliente */
+/* En pantalla el documento se ve como una hoja; al imprimir, como papel. */
+.print-doc {
+  background: #ffffff; color: #0f172a; border-radius: var(--radius);
+  padding: 34px 38px; box-shadow: var(--shadow);
+}
+.print-doc h1, .print-doc h2, .print-doc h3 { color: #0f172a; }
+.print-doc .print-muted { color: #475569; }
+.print-doc .print-head {
+  display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap;
+  border-bottom: 2px solid #0f172a; padding-bottom: 14px;
+}
+.print-doc .print-block { margin-top: 22px; }
+.print-doc .print-block > h3 {
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: #475569; margin-bottom: 8px;
+}
+.print-doc table { font-size: 0.82rem; }
+.print-doc thead th { background: #f1f5f9; color: #334155; border-bottom: 1px solid #cbd5e1; }
+.print-doc tbody td { border-bottom: 1px solid #e2e8f0; color: #0f172a; }
+.print-doc tbody tr:last-child td { border-bottom: 1px solid #e2e8f0; }
+.print-doc tbody tr:hover { background: transparent; }
+.print-doc .table-wrap { border: 1px solid #cbd5e1; }
+/* Los badges del panel son claros sobre fondo oscuro: en papel no se leerían. */
+.print-doc .badge {
+  background: transparent !important; border: 1px solid #94a3b8 !important; color: #334155 !important;
+}
+.print-doc .print-total {
+  display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 12px 14px; background: #f1f5f9; border-radius: 8px; font-weight: 700;
+}
+.print-doc a { color: #0f172a; }
+.print-doc .print-swatch {
+  display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px;
+}
+.print-only { display: none; }
+.print-firma { display: flex; gap: 40px; flex-wrap: wrap; margin-top: 46px; }
+.print-firma > div {
+  flex: 1; min-width: 200px; border-top: 1px solid #0f172a; padding-top: 6px;
+  font-size: 0.78rem; color: #475569;
+}
+
+@page { margin: 14mm; }
+
+@media print {
+  /* Al imprimir solo queda el documento: fuera el marco del panel. */
+  .sidebar, .topbar, .menu-toggle, .toasts, .no-print { display: none !important; }
+  html, body { background: #ffffff !important; color: #000000; height: auto; }
+  .app-shell { display: block; }
+  .main { display: block; }
+  .content { padding: 0; gap: 10px; }
+  .print-doc { box-shadow: none; border-radius: 0; padding: 0; background: #ffffff; }
+  .print-only { display: block; }
+  .card { box-shadow: none; background: #ffffff; }
+  /* Los avisos usan colores claros (pensados para fondo oscuro): en papel hay
+     que oscurecer el texto y el borde o salen ilegibles. */
+  .print-doc .alert,
+  .alert {
+    background: #f8fafc !important; border-color: #94a3b8 !important; color: #1e293b !important;
+  }
+  /* Que una tabla larga no parta una fila por la mitad y repita el encabezado. */
+  tr, .print-block { break-inside: avoid; page-break-inside: avoid; }
+  thead { display: table-header-group; }
+}
+
 /* ---------------------------------------------------------------- responsive */
 .menu-toggle { display: none; }
 @media (max-width: 980px) {

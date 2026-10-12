@@ -28,6 +28,20 @@ const DEFAULT_TASK_TYPES = [
 async function seedRoles(): Promise<Record<string, string>> {
   const map: Record<string, string> = {};
   for (const [key, preset] of Object.entries(ROLE_PRESETS)) {
+    const existing = await prisma.role.findUnique({ where: { key } });
+
+    // Los permisos del preset se SUMAN a los que ya tenga el rol (nunca se
+    // quitan). Motivo: los roles de sistema se crean una sola vez, asi que sin
+    // esta union un permiso nuevo (por ejemplo `billing:write`) no llegaria
+    // nunca a las instalaciones que ya existen, y sus managers verian la
+    // pantalla de facturacion en solo lectura. Al ser aditivo, tampoco se pisan
+    // los permisos que un administrador haya concedido a mano desde el panel.
+    const actuales = (existing?.permissions ?? '')
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const unidos = [...new Set([...actuales, ...preset.permissions])];
+
     const role = await prisma.role.upsert({
       where: { key },
       create: {
@@ -37,9 +51,13 @@ async function seedRoles(): Promise<Record<string, string>> {
         permissions: preset.permissions.join(','),
         isSystem: true,
       },
-      update: { name: preset.name, description: preset.description, isSystem: true },
+      update: { name: preset.name, description: preset.description, isSystem: true, permissions: unidos.join(',') },
     });
     map[key] = role.id;
+    if (existing && unidos.length !== actuales.length) {
+      const nuevos = unidos.filter((p) => !actuales.includes(p));
+      console.log(`✔ rol ${key}: +${nuevos.join(', ')}`);
+    }
   }
   console.log(`✔ roles de sistema: ${Object.keys(map).join(', ')}`);
   return map;
@@ -82,6 +100,7 @@ async function seedAdmin(roleIds: Record<string, string>): Promise<void> {
 async function seedSettings(): Promise<void> {
   const defaults: Array<{ key: string; value: string }> = [
     { key: 'ui.company_name', value: 'TeleTimeTracker' },
+    { key: 'billing.currency', value: 'COP' },
     { key: 'alerts.enabled', value: env.ALERTS_ENABLED ? 'true' : 'false' },
     { key: 'alerts.digest_cron', value: env.DIGEST_CRON },
     { key: 'work.default_timezone', value: env.DEFAULT_TIMEZONE },

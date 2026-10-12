@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { WEEKDAYS, formatDateTime } from '../lib/format';
+import { CURRENCIES } from '../lib/billing';
 import { Alert, Badge, Card, Empty, Field, Spinner, useToast } from '../components/ui';
 
 interface SettingRow {
@@ -14,8 +15,20 @@ interface SettingRow {
 const SECTIONS: Array<{ title: string; hint?: string; keys: string[] }> = [
   {
     title: 'Identidad y jornada por defecto',
-    hint: 'Se aplican como valores iniciales al crear usuarios nuevos.',
-    keys: ['ui.company_name', 'work.default_timezone', 'work.default_days', 'work.default_start', 'work.default_end'],
+    hint: 'Se aplican como valores iniciales al crear usuarios nuevos. El NIT aparece en el reporte que se entrega al cliente.',
+    keys: [
+      'ui.company_name',
+      'ui.company_tax_id',
+      'work.default_timezone',
+      'work.default_days',
+      'work.default_start',
+      'work.default_end',
+    ],
+  },
+  {
+    title: 'Facturación',
+    hint: 'Moneda con la que se valoran las horas en el control de cobro y en el reporte del cliente. La tarifa por hora se define en cada proyecto (o en el cliente, como respaldo).',
+    keys: ['billing.currency'],
   },
   {
     title: 'Registros de tiempo',
@@ -58,6 +71,8 @@ const SECTIONS: Array<{ title: string; hint?: string; keys: string[] }> = [
 
 const LABELS: Record<string, string> = {
   'ui.company_name': 'Nombre de la empresa',
+  'ui.company_tax_id': 'NIT / RUC / RFC de la empresa',
+  'billing.currency': 'Moneda de facturación',
   'work.default_timezone': 'Zona horaria por defecto',
   'work.default_days': 'Días laborables (0=Dom … 6=Sáb)',
   'work.default_start': 'Hora de entrada por defecto',
@@ -458,6 +473,19 @@ export default function SettingsPage() {
                           );
                         })}
                       </div>
+                    ) : key === 'billing.currency' ? (
+                      <select
+                        className="select"
+                        value={current || 'COP'}
+                        disabled={!canWrite}
+                        onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+                      >
+                        {CURRENCIES.map((c) => (
+                          <option key={c.code} value={c.code}>
+                            {c.label}
+                          </option>
+                        ))}
+                      </select>
                     ) : (
                       <input
                         className="input"

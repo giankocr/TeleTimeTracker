@@ -8,6 +8,9 @@ import DashboardPage from './pages/Dashboard';
 import EntriesPage from './pages/Entries';
 import TasksPage from './pages/Tasks';
 import ReportsPage from './pages/Reports';
+// Control de cobro y el reporte de horas que se entrega al cliente.
+import BillingPage from './pages/Billing';
+import ClientStatementPage from './pages/ClientStatement';
 import PendingPage from './pages/Pending';
 import { ClientsPage, ProjectsPage } from './pages/Catalog';
 import UsersPage from './pages/Users';
@@ -72,6 +75,22 @@ function AppRoutes() {
                   }
                 />
                 <Route path="/reportes" element={<ReportsPage />} />
+                <Route
+                  path="/facturacion"
+                  element={
+                    <RequirePermission permission="billing:read">
+                      <BillingPage />
+                    </RequirePermission>
+                  }
+                />
+                <Route
+                  path="/reporte-cliente"
+                  element={
+                    <RequirePermission permission="billing:read">
+                      <ClientStatementPage />
+                    </RequirePermission>
+                  }
+                />
                 <Route path="/pendientes" element={<PendingPage />} />
                 <Route
                   path="/clientes"

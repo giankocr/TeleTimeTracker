@@ -111,12 +111,12 @@ SQLite por defecto (archivo en `/app/data`), con opción de PostgreSQL cambiando
 | **User** (teléfono/OTP) | `phone` (único, E.164), `phoneVerifiedAt`, `otpCodeHash`, `otpExpiresAt`, `otpAttempts`, `otpLastSentAt` | Habilita el acceso «Teléfono + código»; el OTP se guarda hasheado. |
 | **AuthSession** | `refreshHash`, `expiresAt`, `revokedAt` | Permite revocar sesiones (logout, cambio de clave, desactivación). |
 
-**Permisos disponibles** (`shared/types.ts`): `users:*`, `roles:*`, `clients:*`, `projects:*`, `tasktypes:*`, `entries:read:own`, `entries:read:all`, `entries:write`, `entries:delete`, `reports:own|team|all`, `settings:read|write`, `audit:read`, `bot:admin`.
+**Permisos disponibles** (`shared/types.ts`): `users:*`, `roles:*`, `clients:*`, `projects:*`, `tasktypes:*`, `entries:read:own`, `entries:read:all`, `entries:write`, `entries:delete`, `reports:own|team|all`, `billing:read`, `billing:write`, `settings:read|write`, `audit:read`, `bot:admin`.
 
 **Roles predefinidos**
 - **ADMIN** → `*` (acceso total).
-- **MANAGER** → gestiona clientes/proyectos y ve los reportes de su equipo (`reports:team`).
-- **USER** → registra su tiempo y consulta su propio historial (`reports:own`).
+- **MANAGER** → gestiona clientes/proyectos, ve los reportes de su equipo (`reports:team`) y lleva el control de cobro (`billing:read` + `billing:write`).
+- **USER** → registra su tiempo y consulta su propio historial (`reports:own`). No ve la facturación.
 
 ### Jerarquía de datos: Cliente → Proyecto → Tarea → Registro de tiempo
 
@@ -133,7 +133,7 @@ Cliente (Acme)
 
 | Modelo | Qué es | Campos propios |
 |---|---|---|
-| **Task** | Unidad de trabajo reutilizable | `title`, `status` (OPEN/IN_PROGRESS/DONE/CANCELLED), `priority`, `estimatedHours`, `dueDate`, acumulados `totalSeconds` / `entryCount` / `firstWorkedAt` / `lastWorkedAt` |
+| **Task** | Unidad de trabajo reutilizable | `title`, `status` (OPEN/IN_PROGRESS/DONE/CANCELLED), `priority`, `estimatedHours`, `dueDate`, `reference` (nº de tiquete del cliente), `hourlyRate` (tarifa propia), acumulados `totalSeconds` / `entryCount` / `firstWorkedAt` / `lastWorkedAt`, y el control de cobro `billingStatus` / `billedAt` / `paidAt` / `invoiceRef` / `billedAmount` |
 | **TimeEntry** | Un tramo trabajado | `taskId`, `startedAt`, `endedAt`, `durationSec`, `status`, `source` (voz/texto/botón/web), `billable` |
 | **TaskType** | Categoría del trabajo | `name`, `aliases` (para el NLU), `billable` |
 
@@ -150,7 +150,7 @@ Reglas del modelo:
 
 | Modelo | Campos clave |
 |---|---|
-| **Client** | `name`, `code` (ayuda al bot a reconocerlo por voz), `notes`, `isActive` |
+| **Client** | `name`, `code` (ayuda al bot a reconocerlo por voz), `notes`, `isActive`, `hourlyRate` (tarifa de respaldo para valorar las horas) |
 | **ClientProject** | `clientId`, `name`, `githubRepos` (`owner/repo`, varios por coma), `budgetHours`, `hourlyRate`, `isActive` |
 | **ProjectMember** | `projectId` + `userId` + `role` (`OWNER`/`MEMBER`/`VIEWER`) |
 | **TaskType** | `name`, `aliases` (para el NLU), `color`, `billable` |
@@ -180,6 +180,33 @@ Tablas de apoyo: **Pause** (pausas con motivo y duración), **EntryTag** (etique
 3. `pause` detiene el reloj y abre una fila en `Pause`; `resume` la cierra.
 4. `stop` calcula `durationSec` descontando pausas y adjunta commits/PRs de GitHub.
 5. Un cron nocturno cierra segmentos olvidados (>16 h) con `closeReason=IDLE_TIMEOUT`.
+
+### Facturación: tiquetes, facturado y pagado
+
+Sirve para dos cosas que antes no se podían hacer: **entregar al cliente un reporte de horas con el detalle de los tiquetes** y **llevar el control de qué está cobrado**.
+
+El estado de cobro vive en la **Tarea** (el tiquete), no en cada tramo de tiempo: se factura trabajo entregado, y un tiquete puede acumular varios tramos. Por eso **no hay una entidad «Factura»**: una factura es el conjunto de tiquetes que comparten el mismo `invoiceRef`.
+
+| Campo de `Task` | Para qué |
+|---|---|
+| `reference` | Nº de tiquete con el que **el cliente** identifica el trabajo (`#4521`, `JIRA-123`). Opcional |
+| `billingStatus` | `PENDING` (pendiente de facturar) · `BILLED` (facturado) · `PAID` (pagado) |
+| `billedAt` / `paidAt` | Fechas de facturación y de cobro |
+| `invoiceRef` | Nº de factura: **agrupa** varios tiquetes en una misma factura |
+| `billedAmount` | Importe **congelado** al facturar |
+| `hourlyRate` | Tarifa propia del tiquete, si difiere de las demás |
+
+Reglas del control de cobro:
+
+- **La tarifa se resuelve en cascada**: tarifa del tiquete → del proyecto → del cliente (si ninguna existe, el importe queda vacío y el panel lo dice: «sin tarifa»). Lo habitual es fijarla en el proyecto; el cliente sirve de tarifa marco y el tiquete para excepciones.
+- **El importe se congela al facturar**: si después se registran más horas en ese tiquete, lo facturado no cambia solo. Cobrar (`PAID`) tampoco recalcula: conserva el importe que se facturó.
+- **Volver a pendiente deshace el cobro** (limpia fechas, nº de factura e importe congelado). Queda el rastro en `AuditLog`, porque deshacer una factura es una decisión contable, no un borrado.
+- **Se pueden marcar muchos a la vez**, por selección múltiple o por factura completa, y con un importe por tiquete si la tarifa es plana o se negoció otra cosa.
+- **Las horas sin tiquete se informan aparte** (tramos cuyo tiquete se borró, o datos antiguos). No entran en los totales por tiquete, y el reporte lo avisa en lugar de esconder la diferencia.
+
+**Permisos nuevos**: `billing:read` (ver el control y generar el reporte) y `billing:write` (marcar facturado/pagado). El rol **MANAGER** los recibe; **USER** no. El seed los añade de forma **aditiva** a los roles de sistema que ya existen (nunca quita permisos), para que una instalación en marcha reciba la función al actualizarse sin pisar los permisos dados a mano desde el panel.
+
+> **Alcance deliberado**: `/api/billing/*` no filtra por el alcance de usuarios del solicitante, a diferencia de `/api/reports`. Quien tiene `billing:read` gestiona dinero, y un reporte al cliente al que le faltaran las horas de otro equipo estaría mal por defecto: un error caro y además invisible. El acceso queda protegido por el permiso explícito y se puede acotar a una persona con `userId`.
 
 ---
 
@@ -470,9 +497,11 @@ Al cerrar una tarea, si el proyecto tiene `githubRepos`, se consultan **commits 
 |---|---|
 | **Login** | Tres vías: **Telegram (un clic)**, **Teléfono + código por el bot** y **Correo + contraseña**, con JWT y refresh rotativo |
 | **Dashboard** | Totales, facturables, promedio por persona, gráficos por día/cliente/tipo, "ahora mismo" con cronómetros vivos |
-| **Tareas** | Listado con el **acumulado por tarea** (tiempo, nº de tramos, primera/última vez trabajada), detalle con **todos sus registros de tiempo**, creación manual, cambio de estado y reapertura |
-| **Registros de tiempo** | Historial filtrable (rango, estado, cliente, proyecto, persona), cronómetro propio, registro manual, export CSV, **✏️ editar** cualquier registro (tarea, cliente/proyecto, tipo, horas, facturable, estado) y **anular / eliminar / restaurar** (solo admin) |
+| **Tareas** | Listado con el **acumulado por tarea** (tiempo, nº de tramos, primera/última vez trabajada), **nº de tiquete**, estado de cobro, detalle con **todos sus registros de tiempo**, creación manual, cambio de estado y reapertura |
+| **Registros de tiempo** | Historial filtrable (rango, estado, cliente, proyecto, persona), cronómetro propio, registro manual, export CSV (con tiquete y facturación), **✏️ editar** cualquier registro (tarea, cliente/proyecto, tipo, horas, facturable, estado) y **anular / eliminar / restaurar** (solo admin) |
 | **Reportes** | Ranking del equipo, horas por cliente/proyecto/tipo, export CSV |
+| **Facturación** | Qué está pendiente de facturar, facturado **por cobrar** y cobrado, con horas e importes. Selección múltiple para marcar **un tiquete o un grupo** como facturado/pagado, nº de factura para agrupar varios, y tarjeta de **facturas** (cobrar la factura entera de una vez). Avisa del pendiente de meses anteriores cuando la vista está acotada a un periodo |
+| **Reporte del cliente** | Documento imprimible (🖨 **Guardar como PDF**) y exportable a CSV, por cliente y periodo: cabecera del emisor con NIT, resumen de horas e importes, totales por proyecto y **detalle de los tiquetes realizados** (nº de tiquete, descripción, responsables, horas, tarifa, importe, estado y factura), con línea de firmas |
 | **Pendientes** | Backlog personal que alimenta el digest del bot |
 | **Clientes / Proyectos** | CRUD, repos de GitHub, presupuesto y tarifa, equipo asignado, tipos de tarea, **activar/desactivar** y **eliminar definitivamente** (solo admin, con vista previa del impacto) |
 | **Usuarios** | CRUD, rol, supervisor, jornada, Telegram (vincular/desvincular/código), reset de contraseña |
@@ -485,7 +514,7 @@ Al cerrar una tarea, si el proyecto tiene `githubRepos`, se consultan **commits 
 | Sección | Contenido |
 |---|---|
 | **Resumen** | Dashboard, Reportes, Mis pendientes |
-| **Gestión de trabajo** | **Clientes → Proyectos → Tareas → Registros de tiempo** (la misma jerarquía con la que trabaja el bot) |
+| **Gestión de trabajo** | **Clientes → Proyectos → Tareas → Registros de tiempo** (la misma jerarquía con la que trabaja el bot) + **Facturación** |
 | **Administración** | Usuarios, Roles y permisos, Configuración |
 | **Mi cuenta** | Mi perfil, Vincular Telegram |
 
@@ -834,7 +863,10 @@ docker compose up -d --build
 | `POST` | `/api/clients/:id/reassign` · `/api/projects/:id/reassign` | Mueve las horas a otro cliente/proyecto antes de borrar |
 | `DELETE` | `/api/clients/:id` · `/api/projects/:id` | **Desactiva** por defecto. Con `?hard=1` elimina (exige `force=1` si quedarían horas huérfanas) |
 | `POST` | `/api/entries/:id/restore` | Restaura un registro anulado con su duración original |
-| `GET` | `/api/reports/dashboard` · `/team` · `/activity` · `/export.csv` | Reportes |
+| `GET` | `/api/reports/dashboard` · `/team` · `/activity` · `/export.csv` | Reportes. El CSV de tiempos incluye el **tiquete**, el **nº de tiquete** y su **estado de facturación** |
+| `GET` | `/api/billing/overview` | Control de cobro: tiquetes con horas, tarifa, importe y estado; totales por estado, por cliente y por factura. Sin `preset` = todo el historial |
+| `POST` | `/api/billing/mark` | Marca **uno o un grupo** de tiquetes (`taskIds`) o **una factura entera** (`invoiceRef`) como `BILLED` / `PAID` / `PENDING`, con nº de factura, fechas e importe opcional |
+| `GET` | `/api/billing/statement` · `/statement.csv` | Reporte de horas y tiquetes del cliente para el periodo (`clientId`, `preset`, `billingStatus`, `includeBilled`, `withEntries`) |
 | `GET/PUT` | `/api/settings` | Configuración global |
 | `POST` | `/api/telegram/webhook` | Webhook de Telegram (validado por `secret_token`) |
 | `GET` | `/health` · `/api/health` | Healthcheck (usado por Docker/EasyPanel) |
@@ -937,3 +969,7 @@ El proyecto se validó de extremo a extremo:
 - **MySQL**: verificado contra un servidor MySQL 8.4 real: migración inicial (17 tablas), seed automático, arranque de la app y flujo completo de API (login, RBAC, CRUD, cronómetro start→pause→resume→stop con pausas descontadas, registro manual, dashboard, CSV, auditoría). Tipos nativos aplicados (`description` → `TEXT`, `permissions` → `VARCHAR(600)`).
 - **Acceso con teléfono + OTP**: teléfono no registrado (404), código incorrecto (401), anti-spam de 60 s (429), código correcto (200 con sesión) y reutilización del mismo código (401).
 - **Vinculación desde el bot**: compartir el número sin cuenta → solicitud PENDING visible para el admin; aprobación → cuenta creada con rol y Telegram vinculado; segundo intento → vinculación automática; contacto ajeno → rechazado.
+- **Facturación y reporte del cliente** (89 comprobaciones automáticas de extremo a extremo sobre la API, con datos nuevos): tarifa en cascada verificada en los tres niveles (tiquete 50 000, proyecto 100 000, cliente 60 000 → importes 100 000 / 300 000 / 60 000); marcado de un **grupo** como facturado con nº de factura (2 tiquetes → factura con importe 500 000); el **importe congelado no cambia** al registrar 5 h más en un tiquete ya facturado (horas 3 → 8, importe facturado sigue 300 000); **cobro de la factura completa** (2 tiquetes → `PAID`, por cobrar 500 000 → 0); **volver a pendiente** limpia fechas, factura e importe y devuelve el valor real (800 000); el **reporte del cliente** cuadra (4 tiquetes, 5 tramos, 13 h, totales por estado y por proyecto, detalle de tramos con `withEntries`) y **no mezcla clientes** (el otro cliente factura 60 000); las **horas sin tiquete** se informan aparte y no se suman al total (13 h → 12 h); CSVs con nº de tiquete y estado de facturación en ambos exports; validaciones (`400` tiquete inexistente / sin selección / estado inválido / fecha inválida / importe negativo, `404` factura inexistente, `401` sin token); permisos (`403` para el empleado en las tres rutas, MANAGER puede facturar) y auditoría (`billing.mark_billed|paid|pending`).
+- **Herencia del contexto del tiquete**: un tramo creado indicando **solo** `taskId` ahora hereda proyecto, cliente y tipo de su tarea. Antes quedaba con `clientId` y `projectId` vacíos y desaparecía de todo lo agrupado por cliente (reportes y facturación); verificado que los 5 tramos de prueba quedan con cliente y proyecto, y que el reporte por cliente los incluye. El reporte además resuelve el cliente a través de la tarea, para que los datos ya guardados con ese hueco no se pierdan.
+- **Migración de facturación**: `20261004120000_task_billing` (SQLite y MySQL) añade `reference`, `billingStatus` (con `DEFAULT 'PENDING'`, así los tiquetes existentes quedan pendientes de facturar), `billedAt`, `paidAt`, `invoiceRef`, `billedAmount`, `hourlyRate` y `clients.hourlyRate`, más dos índices. Aplicada sobre una base real ya migrada sin perder datos; `verifySchema` comprueba `tasks.billingStatus` y autorrepara si falta.
+- **Permisos nuevos en una instalación en marcha**: el seed es **aditivo** para los roles de sistema. Verificado sobre una base con los roles ya creados: `MANAGER` recibe `+billing:read, billing:write` y `USER` queda igual (sin permisos de facturación).

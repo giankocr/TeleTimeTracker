@@ -170,7 +170,26 @@ export default async function reportRoutes(app: FastifyInstance): Promise<void> 
         ...(f.clientId ? { clientId: f.clientId } : {}),
         ...(f.projectId ? { projectId: f.projectId } : {}),
       },
-      include: { user: { select: { fullName: true, email: true } }, project: { include: { client: true } }, client: true, taskType: true, tags: true },
+      include: {
+        user: { select: { fullName: true, email: true } },
+        project: { include: { client: true } },
+        client: true,
+        taskType: true,
+        tags: true,
+        // El detalle exportado incluye el tiquete y su estado de cobro: es lo que
+        // permite cuadrar la facturación desde la hoja de cálculo.
+        task: {
+          select: {
+            title: true,
+            reference: true,
+            billingStatus: true,
+            invoiceRef: true,
+            billedAt: true,
+            paidAt: true,
+            billedAmount: true,
+          },
+        },
+      },
       orderBy: { startedAt: 'asc' },
     });
 
@@ -178,10 +197,13 @@ export default async function reportRoutes(app: FastifyInstance): Promise<void> 
       'fecha_inicio', 'hora_inicio', 'fecha_fin', 'hora_fin', 'duracion_hhmm',
       'horas_decimal', 'usuario', 'email', 'cliente', 'proyecto', 'tipo_tarea',
       'titulo', 'descripcion', 'facturable', 'estado', 'etiquetas',
+      'tiquete', 'referencia_tiquete', 'estado_facturacion', 'factura',
+      'facturado_en', 'pagado_en', 'importe_facturado',
     ];
 
     const rows = entries.map((e) => {
       const live = e.status === 'RUNNING' ? e.durationSec + Math.floor((Date.now() - e.startedAt.getTime()) / 1000) : e.durationSec;
+      const tarea = (e as { task?: { title: string; reference: string | null; billingStatus: string; invoiceRef: string | null; billedAt: Date | null; paidAt: Date | null; billedAmount: number | null } | null }).task;
       return [
         formatLocal(e.startedAt, tz, false),
         formatLocal(e.startedAt, tz, true),
@@ -199,6 +221,13 @@ export default async function reportRoutes(app: FastifyInstance): Promise<void> 
         e.billable ? 'si' : 'no',
         e.status,
         (e.tags ?? []).map((t) => t.tag).join('|'),
+        tarea?.title ?? '',
+        tarea?.reference ?? '',
+        tarea?.billingStatus ?? '',
+        tarea?.invoiceRef ?? '',
+        tarea?.billedAt ? formatLocal(tarea.billedAt, tz, false) : '',
+        tarea?.paidAt ? formatLocal(tarea.paidAt, tz, false) : '',
+        tarea?.billedAmount ?? '',
       ];
     });
 

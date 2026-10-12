@@ -5,6 +5,7 @@ import { PERMISSIONS } from '../../../shared/types';
 import { authenticate, hasPermission, requirePermission, visibleUserIds } from '../middleware/auth';
 import { audit } from '../utils/audit';
 import { SETTING_KEYS, getSettingBool } from '../services/settings.service';
+import { billingCurrency } from '../services/billing.service';
 
 /**
  * CRUD de clientes y sus proyectos.
@@ -50,12 +51,16 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
     }
 
     return reply.send({
+      currency: billingCurrency(),
       clients: clients.map((c) => ({
         id: c.id,
         name: c.name,
         code: c.code,
         notes: c.notes,
         isActive: c.isActive,
+        // Tarifa por hora de referencia: respaldo de la del proyecto al valorar
+        // las horas en el reporte y en el control de facturación.
+        hourlyRate: c.hourlyRate,
         projectsCount: c._count.projects,
         entriesCount: c._count.entries,
         projects: c.projects,
@@ -72,6 +77,7 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
         code: z.string().max(40).nullable().optional(),
         notes: z.string().max(1000).nullable().optional(),
         isActive: z.boolean().optional(),
+        hourlyRate: z.number().nonnegative().nullable().optional(),
       })
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Datos invalidos' });
@@ -92,6 +98,7 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
         code: z.string().max(40).nullable().optional(),
         notes: z.string().max(1000).nullable().optional(),
         isActive: z.boolean().optional(),
+        hourlyRate: z.number().nonnegative().nullable().optional(),
       })
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Datos invalidos' });
@@ -324,6 +331,9 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
     );
 
     return reply.send({
+      // La moneda acompaña al catálogo para poder mostrar las tarifas con su
+      // formato sin obligar al panel a pedir Ajustes (que exige settings:read).
+      currency: billingCurrency(),
       projects: projects.map((p) => ({
         id: p.id,
         name: p.name,
@@ -482,6 +492,8 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
         clientId: z.string().optional(),
         assigneeId: z.string().optional(),
         status: z.enum(['OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED']).optional(),
+        billingStatus: z.enum(['PENDING', 'BILLED', 'PAID']).optional(),
+        invoiceRef: z.string().max(60).optional(),
         search: z.string().max(120).optional(),
         scope: z.enum(['mine', 'all']).optional(),
         take: z.coerce.number().int().min(1).max(500).optional(),
@@ -505,6 +517,8 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
       projectId: f.projectId,
       clientId: f.clientId,
       status: f.status,
+      billingStatus: f.billingStatus,
+      invoiceRef: f.invoiceRef,
       search: f.search,
       take: f.take ?? 100,
       skip: f.skip ?? 0,
@@ -553,6 +567,14 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
         firstWorkedAt: task.firstWorkedAt?.toISOString() ?? null,
         lastWorkedAt: task.lastWorkedAt?.toISOString() ?? null,
         createdAt: task.createdAt.toISOString(),
+        // --- Tiquete y facturación ---
+        reference: task.reference,
+        hourlyRate: task.hourlyRate,
+        billingStatus: task.billingStatus,
+        billedAt: task.billedAt?.toISOString() ?? null,
+        paidAt: task.paidAt?.toISOString() ?? null,
+        invoiceRef: task.invoiceRef,
+        billedAmount: task.billedAmount,
       },
       entries: serializeEntries(entries as any[]),
     });
@@ -570,6 +592,10 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
         estimatedHours: z.number().positive().nullable().optional(),
         priority: z.enum(['LOW', 'NORMAL', 'HIGH']).optional(),
         dueDate: z.string().nullable().optional(),
+        /** Nº de tiquete con el que el cliente identifica el trabajo. */
+        reference: z.string().max(80).nullable().optional(),
+        /** Tarifa propia de este tiquete (si difiere de la del proyecto). */
+        hourlyRate: z.number().nonnegative().nullable().optional(),
       })
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Datos invalidos' });
@@ -594,6 +620,8 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
         estimatedHours: d.estimatedHours ?? null,
         priority: d.priority ?? 'NORMAL',
         dueDate: d.dueDate ? new Date(d.dueDate) : null,
+        reference: d.reference?.trim() || null,
+        hourlyRate: d.hourlyRate ?? null,
         status: 'OPEN',
       },
     });
@@ -615,6 +643,14 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
         estimatedHours: z.number().positive().nullable().optional(),
         priority: z.enum(['LOW', 'NORMAL', 'HIGH']).optional(),
         dueDate: z.string().nullable().optional(),
+        /** Nº de tiquete con el que el cliente identifica el trabajo. */
+        reference: z.string().max(80).nullable().optional(),
+        /**
+         * Tarifa propia del tiquete. El estado de facturación NO se edita aquí:
+         * se cambia con POST /api/billing/mark, que además congela el importe y
+         * deja auditoría de quién facturó y cuándo.
+         */
+        hourlyRate: z.number().nonnegative().nullable().optional(),
       })
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Datos invalidos' });
@@ -649,6 +685,8 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
         ...(d.estimatedHours !== undefined ? { estimatedHours: d.estimatedHours } : {}),
         ...(d.priority !== undefined ? { priority: d.priority } : {}),
         ...(d.dueDate !== undefined ? { dueDate: d.dueDate ? new Date(d.dueDate) : null } : {}),
+        ...(d.reference !== undefined ? { reference: d.reference?.trim() || null } : {}),
+        ...(d.hourlyRate !== undefined ? { hourlyRate: d.hourlyRate } : {}),
       },
     });
 

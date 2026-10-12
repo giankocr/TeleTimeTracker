@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatHours } from '../lib/format';
+import { DEFAULT_CURRENCY, formatMoney } from '../lib/billing';
 import { Alert, Badge, Card, Empty, Field, Modal, Spinner, useToast } from '../components/ui';
 
 /* =========================================================================
@@ -16,8 +17,11 @@ export function ClientsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [modal, setModal] = useState<{ open: boolean; editing: any | null }>({ open: false, editing: null });
-  const [form, setForm] = useState({ name: '', code: '', notes: '', isActive: true });
+  const [form, setForm] = useState({ name: '', code: '', notes: '', isActive: true, hourlyRate: '' });
   const [saving, setSaving] = useState(false);
+  // Moneda con la que se muestran las tarifas: la manda el servidor con el
+  // catálogo (viene de Ajustes) para no depender del permiso settings:read.
+  const [currency, setCurrency] = useState<string>(DEFAULT_CURRENCY);
 
   const canWrite = can('clients:write');
   const canDelete = can('clients:delete');
@@ -29,8 +33,9 @@ export function ClientsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get<{ clients: any[] }>('/clients', { search: search || undefined, withStats: 'true' });
+      const res = await api.get<{ clients: any[]; currency?: string }>('/clients', { search: search || undefined, withStats: 'true' });
       setClients(res.clients);
+      if (res.currency) setCurrency(res.currency);
     } catch (err) {
       push((err as Error).message, 'error');
     } finally {
@@ -46,7 +51,14 @@ export function ClientsPage() {
   const save = async () => {
     setSaving(true);
     try {
-      const payload = { name: form.name, code: form.code || null, notes: form.notes || null, isActive: form.isActive };
+      const payload = {
+        name: form.name,
+        code: form.code || null,
+        notes: form.notes || null,
+        isActive: form.isActive,
+        // Tarifa de respaldo: se usa solo si el proyecto del tiquete no define la suya.
+        hourlyRate: form.hourlyRate ? Number(form.hourlyRate) : null,
+      };
       if (modal.editing) await api.patch(`/clients/${modal.editing.id}`, payload);
       else await api.post('/clients', payload);
       push(modal.editing ? 'Cliente actualizado' : 'Cliente creado', 'success');
@@ -129,7 +141,7 @@ export function ClientsPage() {
             <button
               className="btn btn-primary"
               onClick={() => {
-                setForm({ name: '', code: '', notes: '', isActive: true });
+                setForm({ name: '', code: '', notes: '', isActive: true, hourlyRate: '' });
                 setModal({ open: true, editing: null });
               }}
             >
@@ -160,6 +172,7 @@ export function ClientsPage() {
                   <th>Código</th>
                   <th className="right">Proyectos</th>
                   <th className="right">Horas (30 días)</th>
+                  <th className="right">Tarifa/h</th>
                   <th>Estado</th>
                   {canWrite ? <th className="right">Acciones</th> : null}
                 </tr>
@@ -174,6 +187,9 @@ export function ClientsPage() {
                     <td className="mono small muted">{c.code ?? '—'}</td>
                     <td className="right">{c.projectsCount}</td>
                     <td className="right mono">{formatHours(c.hours30d)}</td>
+                    <td className="right money nowrap">
+                      {c.hourlyRate ? formatMoney(c.hourlyRate, currency) : <span className="muted-2">—</span>}
+                    </td>
                     <td>{c.isActive ? <Badge kind="badge-success">Activo</Badge> : <Badge kind="badge-danger">Inactivo</Badge>}</td>
                     {canWrite ? (
                       <td>
@@ -181,7 +197,13 @@ export function ClientsPage() {
                           <button
                             className="btn btn-sm"
                             onClick={() => {
-                              setForm({ name: c.name, code: c.code ?? '', notes: c.notes ?? '', isActive: c.isActive });
+                              setForm({
+                                name: c.name,
+                                code: c.code ?? '',
+                                notes: c.notes ?? '',
+                                isActive: c.isActive,
+                                hourlyRate: c.hourlyRate ? String(c.hourlyRate) : '',
+                              });
                               setModal({ open: true, editing: c });
                             }}
                           >
@@ -289,6 +311,20 @@ export function ClientsPage() {
             <Field label="Código corto" hint="Opcional. Ayuda al bot a reconocerlo por voz.">
               <input className="input" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="ACME" />
             </Field>
+            <Field
+              label={`Tarifa por hora (${currency})`}
+              hint="Opcional. Se usa como respaldo cuando el proyecto del tiquete no define su propia tarifa."
+            >
+              <input
+                className="input"
+                type="number"
+                min="0"
+                step="any"
+                value={form.hourlyRate}
+                onChange={(e) => setForm({ ...form, hourlyRate: e.target.value })}
+                placeholder="80000"
+              />
+            </Field>
           </div>
           <Field label="Notas">
             <textarea className="textarea" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
@@ -331,6 +367,7 @@ export function ProjectsPage() {
   const canWrite = can('projects:write');
   const canTypes = can('tasktypes:write');
   const canDelete = can('projects:delete');
+  const [currency, setCurrency] = useState<string>(DEFAULT_CURRENCY);
   const [toDelete, setToDelete] = useState<{ item: any; impact: any } | null>(null);
   const [reassignTo, setReassignTo] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -339,12 +376,13 @@ export function ProjectsPage() {
     setLoading(true);
     try {
       const [p, c, u, t] = await Promise.all([
-        api.get<{ projects: any[] }>('/projects', { clientId: clientFilter || undefined }),
+        api.get<{ projects: any[]; currency?: string }>('/projects', { clientId: clientFilter || undefined }),
         api.get<{ clients: any[] }>('/clients'),
         api.get<{ users: any[] }>('/users').catch(() => ({ users: [] })),
         api.get<{ taskTypes: any[] }>('/task-types').catch(() => ({ taskTypes: [] })),
       ]);
       setProjects(p.projects);
+      if (p.currency) setCurrency(p.currency);
       setClients(c.clients);
       setUsers(u.users);
       setTaskTypes(t.taskTypes);
@@ -486,6 +524,7 @@ export function ProjectsPage() {
                   <th>Cliente</th>
                   <th>GitHub</th>
                   <th className="right">Presupuesto</th>
+                  <th className="right">Tarifa/h</th>
                   <th className="right">Horas (30 d)</th>
                   <th>Equipo</th>
                   {canWrite ? <th className="right">Acciones</th> : null}
@@ -510,6 +549,15 @@ export function ProjectsPage() {
                             {usage}% usado
                           </div>
                         ) : null}
+                      </td>
+                      <td className="right money nowrap">
+                        {p.hourlyRate ? (
+                          formatMoney(p.hourlyRate, currency)
+                        ) : (
+                          <span className="muted-2" title="Sin tarifa propia: se usa la del cliente">
+                            —
+                          </span>
+                        )}
                       </td>
                       <td className="right mono">{formatHours(p.hours30d)}</td>
                       <td className="small">

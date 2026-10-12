@@ -288,13 +288,26 @@ export default async function entryRoutes(app: FastifyInstance): Promise<void> {
       if (!tipo) return reply.code(400).send({ error: 'El tipo de tarea indicado no existe', code: 'TASKTYPE_NOT_FOUND' });
     }
 
+    // El registro HEREDA el contexto de su tarea (proyecto, cliente y tipo).
+    //
+    // Sin esto, un registro creado indicando solo `taskId` quedaba con
+    // proyecto y cliente vacíos: el tiquete sí lo tenía, pero el tramo no, y
+    // desaparecía de todo lo que se agrupa por cliente (reportes, facturación y
+    // el reporte que se entrega al cliente).
+    const contexto = taskId
+      ? await prisma.task.findUnique({
+          where: { id: taskId },
+          select: { projectId: true, clientId: true, taskTypeId: true },
+        })
+      : null;
+
     const entry = await prisma.timeEntry.create({
       data: {
         userId,
         taskId,
-        projectId: project?.id ?? null,
-        clientId: project?.clientId ?? null,
-        taskTypeId: d.taskTypeId ?? null,
+        projectId: project?.id ?? contexto?.projectId ?? null,
+        clientId: project?.clientId ?? contexto?.clientId ?? null,
+        taskTypeId: d.taskTypeId ?? contexto?.taskTypeId ?? null,
         title: d.title,
         description: d.description ?? null,
         startedAt,

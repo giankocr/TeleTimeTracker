@@ -107,6 +107,9 @@ model Client {
   code      String?  @unique
   notes     String?
   isActive  Boolean  @default(true)
+  // Tarifa por hora de referencia del cliente. Se usa cuando el proyecto de la
+  // tarea no define la suya, para poder valorar las horas en el reporte.
+  hourlyRate Float?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -218,6 +221,28 @@ model Task {
   priority       String  @default("NORMAL") // LOW | NORMAL | HIGH
   dueDate        DateTime?
 
+  // --- Tiquete: referencia con la que el cliente identifica el trabajo ---
+  /// Nº de tiquete externo (ej. "#4521", "JIRA-123", "INC-88"). Opcional.
+  reference String?
+
+  // --- Control de facturación ---
+  //  El estado vive en la TAREA (el tiquete), no en cada tramo de tiempo: se
+  //  factura trabajo entregado, y un tiquete puede tener varios tramos.
+  //  PENDING = pendiente de facturar · BILLED = facturado · PAID = pagado
+  billingStatus String    @default("PENDING")
+  /// Cuándo se facturó (se limpia al volver a PENDING).
+  billedAt      DateTime?
+  /// Cuándo se cobró (se limpia al volver a PENDING).
+  paidAt        DateTime?
+  // Nº de factura con la que se cobró. Es lo que AGRUPA varias tareas en una
+  // misma factura, sin necesidad de una entidad aparte.
+  invoiceRef    String?
+  // Importe facturado, CONGELADO al marcar como facturado para que el reporte
+  // no cambie si después se registran más horas en la misma tarea.
+  billedAmount  Float?
+  /// Tarifa por hora propia de esta tarea (si difiere de la del proyecto).
+  hourlyRate    Float?
+
   // --- Acumulados, mantenidos por el motor de tiempo ---
   totalSeconds Int       @default(0)
   entryCount   Int       @default(0)
@@ -233,6 +258,10 @@ model Task {
   @@index([projectId, status])
   @@index([assigneeId, status])
   @@index([status])
+  // Consultas del control de facturación: "tiquetes de este cliente en este estado".
+  @@index([clientId, billingStatus])
+  // Agrupar por nº de factura (la "factura" es el conjunto de tareas con esa ref).
+  @@index([invoiceRef])
   @@map("tasks")
 }
 
