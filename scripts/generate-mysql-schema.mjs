@@ -56,7 +56,7 @@ const NATIVE_TYPES = {
   AuthSession: { refreshHash: 'VarChar(64)', userAgent: 'VarChar(255)', ip: 'VarChar(64)' },
 
   // --- catálogo ---
-  Client: { name: 'VarChar(120)', code: 'VarChar(40)', notes: 'Text' },
+  Client: { name: 'VarChar(120)', code: 'VarChar(40)', notes: 'Text', locale: 'VarChar(8)' },
   ClientProject: {
     name: 'VarChar(120)',
     description: 'Text',

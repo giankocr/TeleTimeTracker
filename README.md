@@ -150,7 +150,7 @@ Reglas del modelo:
 
 | Modelo | Campos clave |
 |---|---|
-| **Client** | `name`, `code` (ayuda al bot a reconocerlo por voz), `notes`, `isActive`, `hourlyRate` (tarifa de respaldo para valorar las horas) |
+| **Client** | `name`, `code` (ayuda al bot a reconocerlo por voz), `notes`, `isActive`, `hourlyRate` (tarifa de respaldo para valorar las horas), `locale` (idioma del reporte: `es` \| `en`) |
 | **ClientProject** | `clientId`, `name`, `githubRepos` (`owner/repo`, varios por coma), `budgetHours`, `hourlyRate`, `isActive` |
 | **ProjectMember** | `projectId` + `userId` + `role` (`OWNER`/`MEMBER`/`VIEWER`) |
 | **TaskType** | `name`, `aliases` (para el NLU), `color`, `billable` |
@@ -203,6 +203,8 @@ Reglas del control de cobro:
 - **Volver a pendiente deshace el cobro** (limpia fechas, nº de factura e importe congelado). Queda el rastro en `AuditLog`, porque deshacer una factura es una decisión contable, no un borrado.
 - **Se pueden marcar muchos a la vez**, por selección múltiple o por factura completa, y con un importe por tiquete si la tarifa es plana o se negoció otra cosa.
 - **Las horas sin tiquete se informan aparte** (tramos cuyo tiquete se borró, o datos antiguos). No entran en los totales por tiquete, y el reporte lo avisa en lugar de esconder la diferencia.
+
+**Idioma del reporte**: el documento y su CSV salen en español o en inglés según el campo `locale` del **cliente** (no del usuario que genera el reporte: la misma persona emite reportes a clientes de idiomas distintos). Los textos viven en un único diccionario (`shared/i18n.ts`) que usan el servidor (cabeceras y totales del CSV) y el panel (el documento), para que el papel y el CSV no se puedan desincronizar. El panel en sí sigue en español: es la herramienta de quien trabaja, no el entregable.
 
 **Permisos nuevos**: `billing:read` (ver el control y generar el reporte) y `billing:write` (marcar facturado/pagado). El rol **MANAGER** los recibe; **USER** no. El seed los añade de forma **aditiva** a los roles de sistema que ya existen (nunca quita permisos), para que una instalación en marcha reciba la función al actualizarse sin pisar los permisos dados a mano desde el panel.
 
@@ -501,7 +503,7 @@ Al cerrar una tarea, si el proyecto tiene `githubRepos`, se consultan **commits 
 | **Registros de tiempo** | Historial filtrable (rango, estado, cliente, proyecto, persona), cronómetro propio, registro manual, export CSV (con tiquete y facturación), **✏️ editar** cualquier registro (tarea, cliente/proyecto, tipo, horas, facturable, estado) y **anular / eliminar / restaurar** (solo admin) |
 | **Reportes** | Ranking del equipo, horas por cliente/proyecto/tipo, export CSV |
 | **Facturación** | Qué está pendiente de facturar, facturado **por cobrar** y cobrado, con horas e importes. Filtros por **cliente**, **proyecto** (para revisar y facturar proyecto por proyecto), estado de cobro, periodo y búsqueda; cliente y proyecto quedan en la URL y el proyecto acota también la lista de proyectos del cliente elegido. Selección múltiple para marcar **un tiquete o un grupo** como facturado/pagado, nº de factura para agrupar varios, y tarjeta de **facturas** (cobrar la factura entera de una vez). Avisa del pendiente de meses anteriores cuando la vista está acotada a un periodo |
-| **Reporte del cliente** | Documento imprimible (🖨 **Guardar como PDF**) y exportable a CSV, por cliente y periodo: cabecera del emisor con NIT, resumen de horas e importes, totales por proyecto y **detalle de los tiquetes realizados** (nº de tiquete, descripción, responsables, horas, tarifa, importe, estado y factura), con línea de firmas |
+| **Reporte del cliente** | Documento imprimible (🖨 **Guardar como PDF**) y exportable a CSV, **en el idioma del cliente** (español o inglés, se elige en su ficha), por cliente y periodo: cabecera del emisor con NIT, resumen de horas e importes, totales por proyecto y **detalle de los tiquetes realizados** (nº de tiquete, descripción, responsables, horas, tarifa, importe, estado y factura), con línea de firmas |
 | **Pendientes** | Backlog personal que alimenta el digest del bot |
 | **Clientes / Proyectos** | CRUD, repos de GitHub, presupuesto y tarifa, equipo asignado, tipos de tarea, **activar/desactivar** y **eliminar definitivamente** (solo admin, con vista previa del impacto) |
 | **Usuarios** | CRUD, rol, supervisor, jornada, Telegram (vincular/desvincular/código), reset de contraseña |

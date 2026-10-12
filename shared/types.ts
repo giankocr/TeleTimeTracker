@@ -3,6 +3,9 @@
  * Fuente unica de verdad para permisos, intents del bot y DTOs.
  */
 
+// Idioma del reporte entregable al cliente (vive en el cliente, ver shared/i18n.ts).
+import type { ReportLocale } from './i18n';
+
 // ---------------------------------------------------------------------------
 // RBAC
 // ---------------------------------------------------------------------------
@@ -346,6 +349,11 @@ export interface ClientStatement {
   /** Emisor del reporte (lo que se configura en Ajustes). */
   company: { name: string; taxId: string | null };
   currency: string;
+  /**
+   * Idioma del documento, tomado del CLIENTE (no del usuario que lo genera).
+   * El panel y el CSV lo usan tal cual para rotular el reporte.
+   */
+  locale: ReportLocale;
   range: { from: string; to: string; label: string };
   generatedAt: string;
   /** true si el reporte incluye horas que ya estaban facturadas. */

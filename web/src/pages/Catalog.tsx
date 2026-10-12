@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatHours } from '../lib/format';
 import { DEFAULT_CURRENCY, formatMoney } from '../lib/billing';
+import { REPORT_LOCALES, REPORT_LOCALE_LABEL, normalizeLocale } from '../../../shared/i18n';
 import { Alert, Badge, Card, Empty, Field, Modal, Spinner, useToast } from '../components/ui';
 
 /* =========================================================================
@@ -17,7 +18,7 @@ export function ClientsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [modal, setModal] = useState<{ open: boolean; editing: any | null }>({ open: false, editing: null });
-  const [form, setForm] = useState({ name: '', code: '', notes: '', isActive: true, hourlyRate: '' });
+  const [form, setForm] = useState({ name: '', code: '', notes: '', isActive: true, hourlyRate: '', locale: 'es' });
   const [saving, setSaving] = useState(false);
   // Moneda con la que se muestran las tarifas: la manda el servidor con el
   // catálogo (viene de Ajustes) para no depender del permiso settings:read.
@@ -58,6 +59,8 @@ export function ClientsPage() {
         isActive: form.isActive,
         // Tarifa de respaldo: se usa solo si el proyecto del tiquete no define la suya.
         hourlyRate: form.hourlyRate ? Number(form.hourlyRate) : null,
+        // Idioma en el que se le emite el reporte de horas a este cliente.
+        locale: form.locale,
       };
       if (modal.editing) await api.patch(`/clients/${modal.editing.id}`, payload);
       else await api.post('/clients', payload);
@@ -141,7 +144,7 @@ export function ClientsPage() {
             <button
               className="btn btn-primary"
               onClick={() => {
-                setForm({ name: '', code: '', notes: '', isActive: true, hourlyRate: '' });
+                setForm({ name: '', code: '', notes: '', isActive: true, hourlyRate: '', locale: 'es' });
                 setModal({ open: true, editing: null });
               }}
             >
@@ -182,6 +185,14 @@ export function ClientsPage() {
                   <tr key={c.id}>
                     <td>
                       <strong>{c.name}</strong>
+                      {/* El idioma se marca solo cuando NO es el de por defecto: así se
+                          ve de un vistazo a qué clientes se les reporta en inglés. */}
+                      {normalizeLocale(c.locale) !== 'es' ? (
+                        <>
+                          {' '}
+                          <Badge kind="badge-info">{normalizeLocale(c.locale).toUpperCase()}</Badge>
+                        </>
+                      ) : null}
                       {c.notes ? <div className="tiny muted-2">{c.notes.slice(0, 80)}</div> : null}
                     </td>
                     <td className="mono small muted">{c.code ?? '—'}</td>
@@ -203,6 +214,7 @@ export function ClientsPage() {
                                 notes: c.notes ?? '',
                                 isActive: c.isActive,
                                 hourlyRate: c.hourlyRate ? String(c.hourlyRate) : '',
+                                locale: normalizeLocale(c.locale),
                               });
                               setModal({ open: true, editing: c });
                             }}
@@ -310,6 +322,18 @@ export function ClientsPage() {
             </Field>
             <Field label="Código corto" hint="Opcional. Ayuda al bot a reconocerlo por voz.">
               <input className="input" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="ACME" />
+            </Field>
+            <Field
+              label="Idioma del reporte"
+              hint="En qué idioma se le entrega el estado de horas (documento y CSV). El panel sigue en español."
+            >
+              <select className="select" value={form.locale} onChange={(e) => setForm({ ...form, locale: e.target.value })}>
+                {REPORT_LOCALES.map((code) => (
+                  <option key={code} value={code}>
+                    {REPORT_LOCALE_LABEL[code]}
+                  </option>
+                ))}
+              </select>
             </Field>
             <Field
               label={`Tarifa por hora (${currency})`}

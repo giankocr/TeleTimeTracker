@@ -15,6 +15,14 @@ import {
   type StatementEntry,
 } from '../lib/billing';
 import { Alert, Badge, Card, Empty, Field, RangeSelect, Spinner, StatCard, useToast } from '../components/ui';
+import {
+  REPORT_LOCALE_LABEL,
+  localeTag,
+  normalizeLocale,
+  tr,
+  type ReportLocale,
+  type ReportStringKey,
+} from '../../../shared/i18n';
 
 /**
  * ESTADO DE HORAS DEL CLIENTE
@@ -33,6 +41,22 @@ import { Alert, Badge, Card, Empty, Field, RangeSelect, Spinner, StatCard, useTo
  * La moneda y los importes vienen resueltos del servidor (redondeo incluido):
  * aquí solo se formatean, nunca se vuelven a redondear.
  */
+/**
+ * Preset del periodo -> clave del diccionario. El nombre del periodo lo calcula
+ * el servidor (en español) para los filtros, pero el documento va en el idioma
+ * del cliente, así que aquí se rotula con la clave que le corresponde.
+ */
+const REPORT_PERIOD_KEYS: Record<string, ReportStringKey> = {
+  today: 'period.today',
+  yesterday: 'period.yesterday',
+  last7: 'period.last7',
+  last30: 'period.last30',
+  thisMonth: 'period.thisMonth',
+  lastMonth: 'period.lastMonth',
+  custom: 'period.custom',
+  all: 'period.all',
+};
+
 export default function ClientStatementPage() {
   const { push } = useToast();
   const { can, loading: authLoading } = useAuth();
@@ -140,6 +164,22 @@ export default function ClientStatementPage() {
   // de "actualizando" lo delata), pero enseñar —y dejar imprimir— el reporte de
   // OTRO cliente es un error que en un papel entregable no se puede permitir.
   const vigente = statement && statement.client.id === clientId ? statement : null;
+
+  // IDIOMA DEL DOCUMENTO: lo decide el CLIENTE, no quien genera el reporte. El
+  // panel (filtros, avisos de pantalla) sigue en español; solo el papel y su CSV
+  // —que son lo que recibe el cliente— cambian de idioma.
+  const docLocale: ReportLocale = normalizeLocale(vigente?.locale);
+  // El idioma también se puede anticipar desde la ficha del cliente, antes de que
+  // el reporte termine de cargar: así el aviso no aparece tarde.
+  const idiomaCliente: ReportLocale = normalizeLocale(
+    vigente?.locale ?? clients.find((c) => c.id === clientId)?.locale,
+  );
+  const L = (key: ReportStringKey): string => tr(docLocale, key);
+  const tag = localeTag(docLocale);
+  // El nombre del periodo lo manda el servidor en español, así que el documento
+  // lo rotula con el preset elegido (que la página conoce) y deja el del servidor
+  // para los rangos que no son un preset.
+  const periodoTexto = (preset in REPORT_PERIOD_KEYS ? L(REPORT_PERIOD_KEYS[preset]!) : vigente?.range.label) ?? '';
   const sinDatos = !vigente || vigente.tickets.length === 0;
   const deshabilitado = !clientId || sinDatos;
 
@@ -189,6 +229,13 @@ export default function ClientStatementPage() {
           <button className="btn btn-sm" onClick={() => void exportCsv()} disabled={deshabilitado} title="El mismo reporte en CSV, para Excel">
             ⬇ CSV
           </button>
+          {/* Se avisa ANTES de imprimir: el idioma lo decide el cliente, no quien
+              genera el reporte, y conviene saberlo antes de enviarlo. */}
+          {idiomaCliente !== 'es' ? (
+            <span className="tiny muted-2" title="El idioma se configura en la ficha del cliente">
+              Documento en {REPORT_LOCALE_LABEL[idiomaCliente]}
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -354,87 +401,109 @@ export default function ClientStatementPage() {
                 <div className="stack-sm" style={{ gap: 2 }}>
                   <h1>{vigente.company.name}</h1>
                   {vigente.company.taxId ? (
-                    <span className="small print-muted">Identificación fiscal: {vigente.company.taxId}</span>
+                    <span className="small print-muted">
+                      {L('doc.tax_id')}: {vigente.company.taxId}
+                    </span>
                   ) : null}
-                  <span className="small print-muted">Generado el {formatDateTime(vigente.generatedAt)}</span>
-                  <span className="tiny print-muted print-only">Documento generado con TeleTimeTracker.</span>
+                  <span className="small print-muted">
+                    {L('doc.generated_on')} {formatDateTime(vigente.generatedAt, tag)}
+                  </span>
+                  <span className="tiny print-muted print-only">{L('doc.powered_by')}</span>
                 </div>
                 <div className="stack-sm" style={{ gap: 2, textAlign: 'right' }}>
-                  <strong style={{ fontSize: '1.05rem' }}>Cliente: {vigente.client.name}</strong>
-                  {vigente.client.code ? <span className="small print-muted">Código: {vigente.client.code}</span> : null}
-                  <span className="small print-muted">Periodo: {vigente.range.label}</span>
+                  <strong style={{ fontSize: '1.05rem' }}>
+                    {L('doc.client')}: {vigente.client.name}
+                  </strong>
+                  {vigente.client.code ? (
+                    <span className="small print-muted">
+                      {L('doc.code')}: {vigente.client.code}
+                    </span>
+                  ) : null}
                   <span className="small print-muted">
-                    {formatDate(vigente.range.from)} – {formatDate(vigente.range.to)}
+                    {L('doc.period')}: {periodoTexto}
+                  </span>
+                  <span className="small print-muted">
+                    {formatDate(vigente.range.from, tag)} – {formatDate(vigente.range.to, tag)}
                   </span>
                 </div>
               </div>
 
               <div className="print-block">
-                <h2 style={{ fontSize: '1.15rem', marginBottom: 4 }}>Reporte de horas y tiquetes</h2>
+                <h2 style={{ fontSize: '1.15rem', marginBottom: 4 }}>{L('doc.title')}</h2>
                 <p className="small print-muted" style={{ marginBottom: 0 }}>
-                  {vigente.totals.tickets} tiquete(s) · {formatHoursHuman(vigente.totals.all.seconds)} ·{' '}
-                  {vigente.totals.users} persona(s)
+                  {vigente.totals.tickets} {L('doc.tickets_unit')} · {formatHoursHuman(vigente.totals.all.seconds)} ·{' '}
+                  {vigente.totals.users} {L('doc.people_unit')}
                 </p>
                 {/* Honestidad del documento: quien lo recibe debe saber si trae
                     horas ya facturadas y de qué alcance de equipo salen. */}
                 <p className="tiny print-muted" style={{ marginTop: 4 }}>
-                  {vigente.includeBilled ? 'Incluye horas ya facturadas.' : 'Solo horas pendientes de facturar.'}{' '}
-                  {vigente.scope === 'all' ? 'Incluye a todo el equipo.' : vigente.scope === 'team' ? 'Incluye a tu equipo.' : 'Incluye solo tus horas.'}
+                  {vigente.includeBilled ? L('doc.includes_billed') : L('doc.only_pending')}{' '}
+                  {vigente.scope === 'all' ? L('doc.scope_all') : vigente.scope === 'team' ? L('doc.scope_team') : L('doc.scope_me')}
                 </p>
               </div>
 
               <div className="print-block">
-                <h3>Resumen del periodo</h3>
+                <h3>{L('doc.summary')}</h3>
                 <div className="table-wrap">
                   <table>
                     <thead>
                       <tr>
-                        <th>Concepto</th>
-                        <th className="right">Horas</th>
-                        <th className="right">Importe</th>
+                        <th>{L('doc.concept')}</th>
+                        <th className="right">{L('doc.hours')}</th>
+                        <th className="right">{L('doc.amount')}</th>
                       </tr>
                     </thead>
                     <tbody>
                       <tr>
-                        <td>Horas del periodo</td>
+                        <td>{L('doc.row_all')}</td>
                         <td className="right mono">{formatHoursHuman(vigente.totals.all.seconds)}</td>
-                        <td className="right mono money">{formatMoney(vigente.totals.all.amount, vigente.currency)}</td>
+                        <td className="right mono money">
+                          {formatMoney(vigente.totals.all.amount, vigente.currency, docLocale)}
+                        </td>
                       </tr>
                       <tr>
-                        <td>Pendiente de facturar</td>
+                        <td>{L('doc.row_pending')}</td>
                         <td className="right mono">{formatHoursHuman(vigente.totals.pending.seconds)}</td>
-                        <td className="right mono money">{formatMoney(vigente.totals.pending.amount, vigente.currency)}</td>
+                        <td className="right mono money">
+                          {formatMoney(vigente.totals.pending.amount, vigente.currency, docLocale)}
+                        </td>
                       </tr>
                       <tr>
-                        <td>Facturado (por cobrar)</td>
+                        <td>{L('doc.row_billed')}</td>
                         <td className="right mono">{formatHoursHuman(vigente.totals.billed.seconds)}</td>
-                        <td className="right mono money">{formatMoney(vigente.totals.billed.amount, vigente.currency)}</td>
+                        <td className="right mono money">
+                          {formatMoney(vigente.totals.billed.amount, vigente.currency, docLocale)}
+                        </td>
                       </tr>
                       <tr>
-                        <td>Pagado</td>
+                        <td>{L('doc.row_paid')}</td>
                         <td className="right mono">{formatHoursHuman(vigente.totals.paid.seconds)}</td>
-                        <td className="right mono money">{formatMoney(vigente.totals.paid.amount, vigente.currency)}</td>
+                        <td className="right mono money">
+                          {formatMoney(vigente.totals.paid.amount, vigente.currency, docLocale)}
+                        </td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
                 <div className="print-total" style={{ marginTop: 10 }}>
-                  <span>TOTAL DEL PERIODO · {formatHoursHuman(vigente.totals.all.seconds)}</span>
-                  <span className="money">{formatMoney(vigente.totals.all.amount, vigente.currency)}</span>
+                  <span>
+                    {L('doc.total')} · {formatHoursHuman(vigente.totals.all.seconds)}
+                  </span>
+                  <span className="money">{formatMoney(vigente.totals.all.amount, vigente.currency, docLocale)}</span>
                 </div>
               </div>
 
               {vigente.byProject.length > 1 ? (
                 <div className="print-block">
-                  <h3>Resumen por proyecto</h3>
+                  <h3>{L('doc.by_project')}</h3>
                   <div className="table-wrap">
                     <table>
                       <thead>
                         <tr>
-                          <th>Proyecto</th>
-                          <th className="right">Tiquetes</th>
-                          <th className="right">Horas</th>
-                          <th className="right">Importe</th>
+                          <th>{L('doc.project')}</th>
+                          <th className="right">{L('doc.tickets')}</th>
+                          <th className="right">{L('doc.hours')}</th>
+                          <th className="right">{L('doc.amount')}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -443,7 +512,7 @@ export default function ClientStatementPage() {
                             <td>{g.projectName}</td>
                             <td className="right mono">{g.tickets}</td>
                             <td className="right mono">{formatHoursHuman(g.seconds)}</td>
-                            <td className="right mono money">{formatMoney(g.amount, vigente.currency)}</td>
+                            <td className="right mono money">{formatMoney(g.amount, vigente.currency, docLocale)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -453,21 +522,21 @@ export default function ClientStatementPage() {
               ) : null}
 
               <div className="print-block">
-                <h3>Detalle de tiquetes realizados</h3>
+                <h3>{L('doc.details')}</h3>
                 <div className="table-wrap">
                   <table>
                     <thead>
                       <tr>
-                        <th>Tiquete</th>
-                        <th>Proyecto</th>
-                        <th>Tipo</th>
-                        <th>Responsable(s)</th>
-                        <th className="right">Tramos</th>
-                        <th className="right">Horas</th>
-                        <th className="right">Tarifa</th>
-                        <th className="right">Importe</th>
-                        <th>Estado</th>
-                        <th>Factura</th>
+                        <th>{L('doc.ticket')}</th>
+                        <th>{L('doc.project')}</th>
+                        <th>{L('doc.type')}</th>
+                        <th>{L('doc.assignees')}</th>
+                        <th className="right">{L('doc.segments')}</th>
+                        <th className="right">{L('doc.hours')}</th>
+                        <th className="right">{L('doc.rate')}</th>
+                        <th className="right">{L('doc.amount')}</th>
+                        <th>{L('doc.status')}</th>
+                        <th>{L('doc.invoice')}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -480,26 +549,30 @@ export default function ClientStatementPage() {
                               <b>{t.title}</b>
                               {t.description ? <div className="tiny print-muted">{t.description}</div> : null}
                             </td>
-                            <td className="small">{t.projectName ?? 'Sin proyecto'}</td>
-                            <td className="small">{t.taskTypeName ?? '—'}</td>
-                            <td className="small">{t.assignees.length ? t.assignees.join(', ') : '—'}</td>
+                            <td className="small">{t.projectName ?? L('doc.no_project')}</td>
+                            <td className="small">{t.taskTypeName ?? L('doc.none')}</td>
+                            <td className="small">{t.assignees.length ? t.assignees.join(', ') : L('doc.none')}</td>
                             <td className="right mono">{t.entryCount}</td>
                             <td className="right mono nowrap">{formatHoursHuman(t.seconds)}</td>
                             <td
                               className="right mono money nowrap"
                               title={t.rateSource ? RATE_SOURCE_LABEL[t.rateSource] : undefined}
                             >
-                              {t.rate === null || t.rate === undefined ? '—' : formatMoney(t.rate, vigente.currency)}
+                              {t.rate === null || t.rate === undefined
+                                ? L('doc.none')
+                                : formatMoney(t.rate, vigente.currency, docLocale)}
                             </td>
                             {/* `chargedAmount` es el importe congelado al facturar; si no
                                 hay factura, el calculado con la tarifa vigente. */}
                             <td className="right mono money nowrap">
-                              {formatMoney(t.chargedAmount ?? t.amount, vigente.currency)}
+                              {formatMoney(t.chargedAmount ?? t.amount, vigente.currency, docLocale)}
                             </td>
                             <td>
-                              <Badge kind={billingBadge(t.billingStatus)}>{billingLabel(t.billingStatus)}</Badge>
+                              <Badge kind={billingBadge(t.billingStatus)}>
+                                {billingLabel(t.billingStatus, docLocale)}
+                              </Badge>
                             </td>
-                            <td className="small nowrap">{t.invoiceRef ?? '—'}</td>
+                            <td className="small nowrap">{t.invoiceRef ?? L('doc.none')}</td>
                           </tr>
 
                           {/* Detalle tramo a tramo: es lo que el cliente pide cuando
@@ -509,20 +582,20 @@ export default function ClientStatementPage() {
                               <td colSpan={10}>
                                 <div className="stack-sm" style={{ padding: '4px 0 8px 18px' }}>
                                   <span className="tiny print-muted">
-                                    Tramos de tiempo del tiquete ({t.entries.length})
+                                    {L('doc.segments_of')} ({t.entries.length})
                                   </span>
                                   {t.entries.map((e: StatementEntry) => (
                                     <div key={e.id} className="row tiny" style={{ gap: 12, flexWrap: 'nowrap' }}>
                                       <span className="nowrap" style={{ minWidth: 92 }}>
-                                        {formatDate(e.startedAt)}
+                                        {formatDate(e.startedAt, tag)}
                                       </span>
                                       <span className="nowrap" style={{ minWidth: 130 }}>
                                         {e.userName}
                                       </span>
                                       <span style={{ flex: 1 }}>
-                                        {e.title ?? 'Sin título'}
+                                        {e.title ?? L('doc.no_title')}
                                         {e.description ? ` — ${e.description}` : ''}
-                                        {e.billable ? '' : ' (no facturable)'}
+                                        {e.billable ? '' : ` ${L('doc.not_billable')}`}
                                       </span>
                                       <span className="mono nowrap">{formatHoursHuman(e.seconds)}</span>
                                     </div>
@@ -537,13 +610,13 @@ export default function ClientStatementPage() {
                     <tfoot>
                       <tr>
                         <td colSpan={4}>
-                          <b>TOTAL DEL PERIODO</b>
+                          <b>{L('doc.total')}</b>
                         </td>
                         <td className="right mono">{tramos}</td>
                         <td className="right mono nowrap">{formatHoursHuman(vigente.totals.all.seconds)}</td>
                         <td />
                         <td className="right mono money nowrap">
-                          <b>{formatMoney(vigente.totals.all.amount, vigente.currency)}</b>
+                          <b>{formatMoney(vigente.totals.all.amount, vigente.currency, docLocale)}</b>
                         </td>
                         <td colSpan={2} />
                       </tr>
@@ -558,9 +631,8 @@ export default function ClientStatementPage() {
                       fuerza un tono oscuro que sí sobrevive a la impresión. */}
                   <Alert kind="warning">
                     <span style={{ color: '#92400e' }}>
-                      <b>{formatHoursHuman(vigente.unticketed.seconds)}</b> de este periodo se registraron sin tiquete
-                      ({vigente.unticketed.entries} tramo(s)). Ese tiempo no se puede agrupar ni facturar por tiquete,
-                      así que no aparece en el detalle ni suma a los totales de este reporte.
+                      <b>{formatHoursHuman(vigente.unticketed.seconds)}</b> {L('doc.unticketed_1')} (
+                      {vigente.unticketed.entries} {L('doc.segments').toLowerCase()}). {L('doc.unticketed_2')}
                     </span>
                   </Alert>
                 </div>
@@ -568,12 +640,12 @@ export default function ClientStatementPage() {
 
               <div className="print-firma">
                 <div>
-                  Elaboró
-                  <div className="print-muted">Firma y fecha</div>
+                  {L('doc.signature_author')}
+                  <div className="print-muted">{L('doc.signature_hint')}</div>
                 </div>
                 <div>
-                  Recibido / aprobado por el cliente
-                  <div className="print-muted">Firma y fecha</div>
+                  {L('doc.signature_client')}
+                  <div className="print-muted">{L('doc.signature_hint')}</div>
                 </div>
               </div>
             </div>

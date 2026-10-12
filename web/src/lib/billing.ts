@@ -31,6 +31,7 @@ export type {
 } from '../../../shared/types';
 
 import { CURRENCIES, DEFAULT_CURRENCY, currencyDecimals } from '../../../shared/types';
+import { billingStatusText, localeTag, type ReportLocale } from '../../../shared/i18n';
 
 /** Badge por estado de facturación (mismo idioma visual que el resto del panel). */
 export const BILLING_BADGE: Record<string, string> = {
@@ -49,9 +50,13 @@ export const BILLING_COLOR: Record<string, string> = {
 export const billingBadge = (status: string | null | undefined): string =>
   BILLING_BADGE[status ?? ''] ?? 'badge';
 
-/** Etiqueta corta de un estado de facturación desconocido = el propio código. */
-export const billingLabel = (status: string | null | undefined): string =>
-  (status ? { PENDING: 'Pendiente', BILLED: 'Facturado', PAID: 'Pagado' }[status] : undefined) ?? status ?? '—';
+/**
+ * Etiqueta corta de un estado de facturación. Sale del diccionario compartido
+ * para que el panel y el documento digan lo mismo; por defecto en español, que
+ * es el idioma del panel, y el reporte pide el idioma del cliente.
+ */
+export const billingLabel = (status: string | null | undefined, locale: ReportLocale = 'es'): string =>
+  status ? billingStatusText(locale, status) : '—';
 
 /** ¿Es un código de moneda del catálogo? */
 export const isKnownCurrency = (code: string | null | undefined): boolean =>
@@ -62,12 +67,17 @@ export const isKnownCurrency = (code: string | null | undefined): boolean =>
  * Usa `Intl` en lugar de concatenar el símbolo a mano: así el separador de
  * miles y la posición del símbolo salen correctos en cada moneda.
  */
-export function formatMoney(value: number | null | undefined, currency = DEFAULT_CURRENCY): string {
+export function formatMoney(
+  value: number | null | undefined,
+  currency = DEFAULT_CURRENCY,
+  /** Idioma del documento: cambia el separador de miles y el de decimales. */
+  locale: ReportLocale = 'es',
+): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—';
   const code = (currency || DEFAULT_CURRENCY).toUpperCase();
   const decimals = currencyDecimals(code);
   try {
-    return new Intl.NumberFormat('es-CO', {
+    return new Intl.NumberFormat(localeTag(locale), {
       style: 'currency',
       currency: code,
       minimumFractionDigits: decimals,

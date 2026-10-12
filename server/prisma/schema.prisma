@@ -110,6 +110,10 @@ model Client {
   // Tarifa por hora de referencia del cliente. Se usa cuando el proyecto de la
   // tarea no define la suya, para poder valorar las horas en el reporte.
   hourlyRate Float?
+  // Idioma del reporte que se le entrega a este cliente: "es" o "en".
+  // Va en el CLIENTE (no en el usuario que lo genera) porque el documento es
+  // para él: un mismo trabajador emite reportes a clientes de idiomas distintos.
+  locale    String   @default("es")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

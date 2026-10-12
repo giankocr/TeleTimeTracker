@@ -24,9 +24,13 @@ export function formatSeconds(seconds: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 }
 
-export function formatDateTime(iso: string | null | undefined): string {
+/**
+ * Fecha y hora en el idioma pedido. `locale` es una etiqueta BCP-47
+ * ("es-CO" del panel o "en-US" del reporte de un cliente en inglés).
+ */
+export function formatDateTime(iso: string | null | undefined, locale = 'es-CO'): string {
   if (!iso) return '—';
-  return new Date(iso).toLocaleString('es-CO', {
+  return new Date(iso).toLocaleString(locale, {
     day: '2-digit',
     month: 'short',
     hour: '2-digit',
@@ -35,14 +39,14 @@ export function formatDateTime(iso: string | null | undefined): string {
   });
 }
 
-export function formatDate(iso: string | null | undefined): string {
+export function formatDate(iso: string | null | undefined, locale = 'es-CO'): string {
   if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
+  return new Date(iso).toLocaleDateString(locale, { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-export function formatTime(iso: string | null | undefined): string {
+export function formatTime(iso: string | null | undefined, locale = 'es-CO'): string {
   if (!iso) return '—';
-  return new Date(iso).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return new Date(iso).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 export function relativeFrom(iso: string): string {

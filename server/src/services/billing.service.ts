@@ -2,6 +2,7 @@ import { prisma } from '../db/prisma';
 import { hoursFromSeconds } from '../utils/format';
 import { zonedDateString } from '../utils/time';
 import { getSetting, SETTING_KEYS } from './settings.service';
+import { billingStatusText, normalizeLocale, tr, type ReportLocale } from '../../../shared/i18n';
 import { TASK_STATUS_LABEL } from './task.service';
 import {
   DEFAULT_CURRENCY,
@@ -634,7 +635,8 @@ export async function buildClientStatement(query: StatementQuery): Promise<Clien
 
   const client = await prisma.client.findUnique({
     where: { id: query.clientId },
-    select: { id: true, name: true, code: true, hourlyRate: true },
+    // `locale` decide el idioma del documento que se le entrega a ESTE cliente.
+    select: { id: true, name: true, code: true, hourlyRate: true, locale: true },
   });
   if (!client) throw Object.assign(new Error('Cliente no encontrado'), { statusCode: 404 });
 
@@ -816,6 +818,8 @@ export async function buildClientStatement(query: StatementQuery): Promise<Clien
       taxId: getSetting(SETTING_KEYS.COMPANY_TAX_ID, '') || null,
     },
     currency,
+    // Idioma del documento, ya resuelto: el panel y el CSV lo usan tal cual.
+    locale: normalizeLocale(client.locale),
     range: { from: query.from.toISOString(), to: query.to.toISOString(), label: query.label },
     generatedAt: new Date().toISOString(),
     includeBilled: query.includeBilled !== false,
@@ -845,10 +849,14 @@ export async function buildClientStatement(query: StatementQuery): Promise<Clien
 // ---------------------------------------------------------------------------
 
 export function statementToCsv(statement: ClientStatement, timezone: string): string {
+  // El CSV es la misma entrega que el papel, así que va en el idioma del cliente.
+  const locale: ReportLocale = normalizeLocale(statement.locale);
+  const t = (key: Parameters<typeof tr>[1]): string => tr(locale, key);
+
   const header = [
-    'referencia', 'tiquete', 'descripcion', 'proyecto', 'tipo', 'responsables',
-    'primera_actividad', 'ultima_actividad', 'tramos', 'horas', 'horas_decimal',
-    'tarifa_hora', 'importe', 'estado_facturacion', 'factura', 'facturado_en', 'pagado_en',
+    t('csv.reference'), t('csv.ticket'), t('csv.description'), t('csv.project'), t('csv.type'), t('csv.assignees'),
+    t('csv.first'), t('csv.last'), t('csv.segments'), t('csv.hours'), t('csv.hours_decimal'),
+    t('csv.rate'), t('csv.amount'), t('csv.billing_status'), t('csv.invoice'), t('csv.billed_at'), t('csv.paid_at'),
   ];
 
   // Las fechas se expresan en la zona del usuario que genera el reporte: en UTC
@@ -869,7 +877,8 @@ export function statementToCsv(statement: ClientStatement, timezone: string): st
     (t.seconds / 3600).toFixed(2),
     t.rate ?? '',
     t.chargedAmount ?? '',
-    t.billingStatus,
+    // El estado se escribe legible ("Pagado" / "Paid"): el CSV lo abre una persona.
+    billingStatusText(locale, t.billingStatus),
     t.invoiceRef ?? '',
     day(t.billedAt),
     day(t.paidAt),
@@ -877,7 +886,7 @@ export function statementToCsv(statement: ClientStatement, timezone: string): st
 
   // Fila de totales: el cliente ve el cierre del periodo sin sumar a mano.
   rows.push([
-    '', 'TOTAL DEL PERIODO', '', '', '', '', '', '', statement.totals.entries,
+    '', t('doc.total'), '', '', '', '', '', '', statement.totals.entries,
     formatHhMm(statement.totals.all.seconds),
     (statement.totals.all.seconds / 3600).toFixed(2),
     '', statement.totals.all.amount, '', '', '', '',

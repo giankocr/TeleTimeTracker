@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { PERMISSIONS } from '../../../shared/types';
+import { REPORT_LOCALES, normalizeLocale } from '../../../shared/i18n';
 import { authenticate, hasPermission, requirePermission, visibleUserIds } from '../middleware/auth';
 import { audit } from '../utils/audit';
 import { SETTING_KEYS, getSettingBool } from '../services/settings.service';
@@ -61,6 +62,8 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
         // Tarifa por hora de referencia: respaldo de la del proyecto al valorar
         // las horas en el reporte y en el control de facturación.
         hourlyRate: c.hourlyRate,
+        // Idioma en el que se le emite el reporte a este cliente ("es" | "en").
+        locale: normalizeLocale(c.locale),
         projectsCount: c._count.projects,
         entriesCount: c._count.entries,
         projects: c.projects,
@@ -78,6 +81,8 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
         notes: z.string().max(1000).nullable().optional(),
         isActive: z.boolean().optional(),
         hourlyRate: z.number().nonnegative().nullable().optional(),
+        /** Idioma del reporte que se le entrega: "es" o "en". */
+        locale: z.enum(REPORT_LOCALES).optional(),
       })
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Datos invalidos' });
@@ -99,6 +104,8 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
         notes: z.string().max(1000).nullable().optional(),
         isActive: z.boolean().optional(),
         hourlyRate: z.number().nonnegative().nullable().optional(),
+        /** Idioma del reporte que se le entrega: "es" o "en". */
+        locale: z.enum(REPORT_LOCALES).optional(),
       })
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Datos invalidos' });
