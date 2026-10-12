@@ -304,10 +304,16 @@ tr.row-selected:hover { background: rgba(99, 102, 241, 0.16); }
 }
 
 /* -------------------------------------------- reporte imprimible del cliente */
-/* En pantalla el documento se ve como una hoja; al imprimir, como papel. */
+/* En pantalla el documento se ve como una hoja; al imprimir, como papel.
+   MARGEN: en pantalla la hoja lleva el MISMO margen que el papel (18 mm arriba
+   y abajo, 16 mm a los lados) para que la vista previa sea fiel: antes tenía
+   34x38 px en pantalla y 14 mm en papel, así que el PDF no salía como se veía.
+   Al imprimir la hoja va SIN relleno: el margen lo pone la página (@page). Si lo
+   llevara el elemento, solo la primera página tendría margen superior y la
+   última inferior; con @page, todas las páginas quedan iguales. */
 .print-doc {
   background: #ffffff; color: #0f172a; border-radius: var(--radius);
-  padding: 34px 38px; box-shadow: var(--shadow);
+  padding: 18mm 16mm; box-shadow: var(--shadow);
 }
 .print-doc h1, .print-doc h2, .print-doc h3 { color: #0f172a; }
 .print-doc .print-muted { color: #475569; }
@@ -315,7 +321,7 @@ tr.row-selected:hover { background: rgba(99, 102, 241, 0.16); }
   display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap;
   border-bottom: 2px solid #0f172a; padding-bottom: 14px;
 }
-.print-doc .print-block { margin-top: 22px; }
+.print-doc .print-block { margin-top: 26px; }
 .print-doc .print-block > h3 {
   font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
   color: #475569; margin-bottom: 8px;
@@ -345,7 +351,11 @@ tr.row-selected:hover { background: rgba(99, 102, 241, 0.16); }
   font-size: 0.78rem; color: #475569;
 }
 
-@page { margin: 14mm; }
+/* Margen de la hoja. 18 mm arriba/abajo y 16 mm a los lados: más aire que los
+   14 mm anteriores, que quedaban al borde del área no imprimible de muchas
+   impresoras. El tamaño del papel lo decide el diálogo de impresión (no se fija
+   `size` para no imponer A4 a quien imprima en otro formato). */
+@page { margin: 18mm 16mm; }
 
 @media print {
   /* Al imprimir solo queda el documento: fuera el marco del panel. */
@@ -353,7 +363,8 @@ tr.row-selected:hover { background: rgba(99, 102, 241, 0.16); }
   html, body { background: #ffffff !important; color: #000000; height: auto; }
   .app-shell { display: block; }
   .main { display: block; }
-  .content { padding: 0; gap: 10px; }
+  .content { padding: 0; gap: 0; }
+  /* Sin relleno: el margen lo pone @page en TODAS las páginas. */
   .print-doc { box-shadow: none; border-radius: 0; padding: 0; background: #ffffff; }
   .print-only { display: block; }
   .card { box-shadow: none; background: #ffffff; }
@@ -363,9 +374,17 @@ tr.row-selected:hover { background: rgba(99, 102, 241, 0.16); }
   .alert {
     background: #f8fafc !important; border-color: #94a3b8 !important; color: #1e293b !important;
   }
-  /* Que una tabla larga no parta una fila por la mitad y repita el encabezado. */
+  /* Paginación: ninguna fila se parte por la mitad y el encabezado de la tabla
+     se repite en cada página. */
   tr, .print-block { break-inside: avoid; page-break-inside: avoid; }
   thead { display: table-header-group; }
+  /* Bloques cortos que quedarían feos partidos o solos al final de una página:
+     la cabecera, el total, el bloque de firmas y los títulos de sección. */
+  .print-head, .print-total, .print-firma { break-inside: avoid; page-break-inside: avoid; }
+  .print-doc .print-block > h3 { break-after: avoid; page-break-after: avoid; }
+  /* El total no debe quedarse en una página y su tabla en la anterior. */
+  .print-doc table { break-before: auto; }
+  .print-doc .print-total { break-before: avoid; page-break-before: avoid; }
 }
 
 /* ---------------------------------------------------------------- responsive */
