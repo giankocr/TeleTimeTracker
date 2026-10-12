@@ -56,6 +56,14 @@ interface ClientRow {
   isActive: boolean;
 }
 
+interface ProjectRow {
+  id: string;
+  name: string;
+  clientId: string;
+  clientName: string;
+  isActive: boolean;
+}
+
 /** Qué se está marcando: una selección de tiquetes o una factura completa. */
 interface MarkTarget {
   status: 'PENDING' | 'BILLED' | 'PAID';
@@ -81,6 +89,7 @@ export default function BillingPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [preset, setPreset] = useState(searchParams.get('preset') ?? 'all');
   const [clientId, setClientId] = useState(searchParams.get('clientId') ?? '');
+  const [projectId, setProjectId] = useState(searchParams.get('projectId') ?? '');
   const [status, setStatus] = useState('ALL');
   const [search, setSearch] = useState('');
   const [invoiceFilter, setInvoiceFilter] = useState('');
@@ -89,6 +98,7 @@ export default function BillingPage() {
 
   const [data, setData] = useState<(BillingOverview & { canWrite: boolean }) | null>(null);
   const [clients, setClients] = useState<ClientRow[]>([]);
+  const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -108,6 +118,9 @@ export default function BillingPage() {
         from: preset === 'custom' && from ? fromDateInput(from) : undefined,
         to: preset === 'custom' && to ? fromDateInput(to) : undefined,
         clientId: clientId || undefined,
+        // El proyecto acota la vista a los tiquetes de ESE proyecto: es la forma
+        // de revisar y facturar proyecto por proyecto (p. ej. los de una persona).
+        projectId: projectId || undefined,
         billingStatus: status,
         invoiceRef: invoiceFilter || undefined,
         search: search || undefined,
@@ -122,7 +135,7 @@ export default function BillingPage() {
     } finally {
       setLoading(false);
     }
-  }, [preset, from, to, clientId, status, invoiceFilter, search, push]);
+  }, [preset, from, to, clientId, projectId, status, invoiceFilter, search, push]);
 
   useEffect(() => {
     const t = setTimeout(() => void load(), 250);
@@ -136,13 +149,35 @@ export default function BillingPage() {
     })();
   }, []);
 
-  // El cliente y el periodo quedan en la URL para poder compartir el enlace y
-  // para que el reporte del cliente se abra con el mismo contexto.
+  // Los proyectos se recargan al cambiar el cliente: se ofrece solo lo que
+  // tiene sentido para el filtro elegido (los proyectos de ese cliente).
+  useEffect(() => {
+    void (async () => {
+      const res = await api
+        .get<{ projects: ProjectRow[] }>('/projects', { clientId: clientId || undefined })
+        .catch(() => ({ projects: [] }));
+      setProjects(res.projects ?? []);
+    })();
+  }, [clientId]);
+
+  // El cliente, el proyecto y el periodo quedan en la URL para poder compartir
+  // el enlace y para que el reporte del cliente se abra con el mismo contexto.
   const changeClient = (value: string) => {
     setClientId(value);
+    // Cambiar de cliente invalida el proyecto elegido (es de otro cliente).
+    setProjectId('');
     const next = new URLSearchParams(searchParams);
     if (value) next.set('clientId', value);
     else next.delete('clientId');
+    next.delete('projectId');
+    setSearchParams(next, { replace: true });
+  };
+
+  const changeProject = (value: string) => {
+    setProjectId(value);
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set('projectId', value);
+    else next.delete('projectId');
     setSearchParams(next, { replace: true });
   };
 
@@ -259,6 +294,10 @@ export default function BillingPage() {
     (historical?.seconds ?? 0) > (data?.totals.pending.seconds ?? 0) + 1;
 
   const reportQuery = new URLSearchParams({ preset: preset === 'all' || preset === 'custom' ? 'thisMonth' : preset });
+  if (projectId) reportQuery.set('projectId', projectId);
+  // El reporte se emite por cliente; si solo hay proyecto elegido, se deduce su
+  // cliente para no obligar a elegirlo a mano otra vez.
+  const reportClientId = clientId || projects.find((p) => p.id === projectId)?.clientId || '';
 
   return (
     <div className="stack">
@@ -270,12 +309,12 @@ export default function BillingPage() {
           </p>
         </div>
         <div className="btn-row">
-          {clientId ? (
-            <Link className="btn btn-primary btn-sm" to={`/reporte-cliente?clientId=${clientId}&${reportQuery.toString()}`}>
+          {reportClientId ? (
+            <Link className="btn btn-primary btn-sm" to={`/reporte-cliente?clientId=${reportClientId}&${reportQuery.toString()}`}>
               🧾 Reporte del cliente
             </Link>
           ) : (
-            <span className="tiny muted-2" title="Elige un cliente para generar su reporte de horas">
+            <span className="tiny muted-2" title="Elige un cliente o un proyecto para generar su reporte de horas">
               🧾 Reporte del cliente
             </span>
           )}
@@ -342,6 +381,21 @@ export default function BillingPage() {
             {clients.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
+              </option>
+            ))}
+          </select>
+          <select
+            className="select"
+            style={{ width: 'auto' }}
+            value={projectId}
+            onChange={(e) => changeProject(e.target.value)}
+            title="Ver y facturar los tiquetes de un solo proyecto"
+          >
+            <option value="">Todos los proyectos</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {/* Con un cliente elegido sobra el nombre del cliente. */}
+                {clientId ? p.name : `${p.name} · ${p.clientName}`}
               </option>
             ))}
           </select>
