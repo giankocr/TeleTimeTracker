@@ -87,12 +87,15 @@ export default function TasksPage() {
   const [projects, setProjects] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [taskTypes, setTaskTypes] = useState<any[]>([]);
+  const [clients, setClients] = useState<any[]>([]);
 
   const [detail, setDetail] = useState<{ task: any; entries: any[] } | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<{ id: string; title: string } | null>(null);
   const [deleting, setDeleting] = useState<{ id: string; title: string } | null>(null);
   const [assigneeId, setAssigneeId] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [projectId, setProjectId] = useState('');
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
@@ -107,6 +110,8 @@ export default function TasksPage() {
         status: status || undefined,
         scope,
         assigneeId: assigneeId || undefined,
+        clientId: clientId || undefined,
+        projectId: projectId || undefined,
         take: 200,
       });
       setTasks(res.tasks);
@@ -116,7 +121,7 @@ export default function TasksPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, status, scope, assigneeId, push]);
+  }, [search, status, scope, assigneeId, clientId, projectId, push]);
 
   useEffect(() => {
     const t = setTimeout(() => void load(), 250);
@@ -125,16 +130,30 @@ export default function TasksPage() {
 
   useEffect(() => {
     void (async () => {
-      const [p, u, tt] = await Promise.all([
+      const [p, u, tt, c] = await Promise.all([
         api.get<{ projects: any[] }>('/projects').catch(() => ({ projects: [] })),
         api.get<{ users: any[] }>('/users').catch(() => ({ users: [] })),
         api.get<{ taskTypes: any[] }>('/task-types').catch(() => ({ taskTypes: [] })),
+        api.get<{ clients: any[] }>('/clients', { isActive: 'true' }).catch(() => ({ clients: [] })),
       ]);
       setProjects(p.projects);
       setUsers(u.users);
       setTaskTypes(tt.taskTypes);
+      setClients(c.clients);
     })();
   }, []);
+
+  // Opciones del filtro por proyecto: se acotan al cliente elegido para no
+  // ofrecer combinaciones imposibles (un proyecto de otro cliente daría 0).
+  // Se calcula de la lista de proyectos ya cargada, para no volver a pedirla y
+  // para no alterar la que usa el formulario de tarea, que necesita todas.
+  const projectOptions = projects.filter((p) => !clientId || p.clientId === clientId);
+
+  /** Cambiar de cliente invalida el proyecto elegido: era de otro cliente. */
+  const changeClientFilter = (value: string) => {
+    setClientId(value);
+    setProjectId('');
+  };
 
   const openDetail = async (task: TaskRow) => {
     try {
@@ -347,6 +366,35 @@ export default function TasksPage() {
           <select className="select" style={{ width: 'auto' }} value={scope} onChange={(e) => setScope(e.target.value as 'mine' | 'all')}>
             <option value="mine">Mis tareas</option>
             <option value="all">Todas las que puedo ver</option>
+          </select>
+          <select
+            className="select"
+            style={{ width: 'auto' }}
+            value={clientId}
+            onChange={(e) => changeClientFilter(e.target.value)}
+            title="Ver solo las tareas de un cliente"
+          >
+            <option value="">Todos los clientes</option>
+            {clients.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          <select
+            className="select"
+            style={{ width: 'auto' }}
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            title="Ver solo las tareas de un proyecto"
+          >
+            <option value="">Todos los proyectos</option>
+            {projectOptions.map((p) => (
+              <option key={p.id} value={p.id}>
+                {/* Con un cliente elegido sobra repetir su nombre. */}
+                {clientId ? p.name : `${p.name} · ${p.clientName}`}
+              </option>
+            ))}
           </select>
           <select
             className="select"

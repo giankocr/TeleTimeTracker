@@ -223,19 +223,31 @@ export async function listTasks(params: {
   const where: Prisma.TaskWhereInput = {
     ...(params.userIds?.length ? { assigneeId: { in: params.userIds } } : {}),
     ...(params.projectId ? { projectId: params.projectId } : {}),
-    ...(params.clientId ? { clientId: params.clientId } : {}),
     ...(params.status ? { status: params.status } : {}),
     ...(params.billingStatus ? { billingStatus: params.billingStatus } : {}),
     ...(params.invoiceRef ? { invoiceRef: params.invoiceRef } : {}),
-    ...(params.search
-      ? {
-          OR: [
-            { title: { contains: params.search } },
-            { description: { contains: params.search } },
-            { reference: { contains: params.search } },
-          ],
-        }
-      : {}),
+    // Los dos filtros "difusos" (cliente y búsqueda) van en un AND de ORs: si se
+    // pusieran como dos claves `OR` en el mismo objeto, la segunda pisaría a la
+    // primera y filtrar por cliente dejaría de buscar.
+    AND: [
+      // El cliente de la tarea puede venir copiado en ella o heredarse de su
+      // proyecto: se aceptan las dos, para que una tarea antigua sin `clientId`
+      // no se escape del filtro de su cliente.
+      ...(params.clientId
+        ? [{ OR: [{ clientId: params.clientId }, { project: { clientId: params.clientId } }] }]
+        : []),
+      ...(params.search
+        ? [
+            {
+              OR: [
+                { title: { contains: params.search } },
+                { description: { contains: params.search } },
+                { reference: { contains: params.search } },
+              ],
+            },
+          ]
+        : []),
+    ],
   };
 
   const [rows, total] = await Promise.all([
