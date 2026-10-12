@@ -426,8 +426,8 @@ export default function BillingPage() {
             </button>
           ) : null}
           <span className="spacer" />
-          <span className="tiny muted-2">
-            {tickets.length} de {data?.total ?? 0}
+          <span className="tiny muted-2" title="Un tiquete sin horas registradas no tiene nada que facturar, así que no se lista aquí: sigue existiendo en Tareas.">
+            {tickets.length} de {data?.total ?? 0} · solo tiquetes con horas
           </span>
         </div>
 

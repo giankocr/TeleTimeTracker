@@ -504,6 +504,12 @@ export default async function clientRoutes(app: FastifyInstance): Promise<void> 
     const auth = request.auth!;
 
     const visible = await visibleUserIds(auth);
+    // Filtrar por responsable NO debe saltarse el alcance: sin esta comprobacion,
+    // un manager podia pedir `assigneeId` de alguien de otro equipo y ver sus
+    // tareas (el listado del panel ya ofrece ese filtro).
+    if (f.assigneeId && f.assigneeId !== auth.userId && !visible.all && !visible.ids.includes(f.assigneeId)) {
+      return reply.code(403).send({ error: 'Ese responsable no esta en tu equipo', code: 'OUT_OF_SCOPE' });
+    }
     let userIds: string[] | undefined;
     if (f.scope === 'mine' || !visible.all) {
       userIds = f.assigneeId ? [f.assigneeId] : visible.all ? [auth.userId] : visible.ids;

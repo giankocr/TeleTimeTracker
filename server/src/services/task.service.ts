@@ -247,7 +247,16 @@ export async function listTasks(params: {
         taskType: { select: { name: true } },
         assignee: { select: { fullName: true } },
       },
-      orderBy: [{ lastWorkedAt: 'desc' }, { createdAt: 'desc' }],
+      // ORDEN: por última modificación, NO por `lastWorkedAt`.
+      //
+      // Antes se ordenaba por `lastWorkedAt desc`, que en MySQL deja los NULL al
+      // FINAL: una tarea recién asignada y todavía sin tiempo caía al fondo del
+      // listado y, con más filas que el límite de la consulta, no llegaba a
+      // mostrarse nunca. Parecía que se habían perdido tareas. `updatedAt` no
+      // tiene nulos y se mueve tanto al asignarla o editarla como al registrarle
+      // tiempo (`recalcTaskTotals`), así que "lo último que se tocó" encabeza la
+      // lista sin enterrar nada.
+      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
       take: params.take ?? 100,
       skip: params.skip ?? 0,
     }),

@@ -77,7 +77,12 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
-  const [scope, setScope] = useState<'mine' | 'all'>('mine');
+  // Alcance inicial: quien puede ver el trabajo de otros (admin/manager) entra
+  // viendo TODO lo que le corresponde. Arrancar en «Mis tareas» hacía pensar que
+  // las tareas de los demás no existían.
+  const [scope, setScope] = useState<'mine' | 'all'>(
+    can('entries:read:all') || can('reports:team') || can('reports:all') ? 'all' : 'mine',
+  );
 
   const [projects, setProjects] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
@@ -87,6 +92,7 @@ export default function TasksPage() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<{ id: string; title: string } | null>(null);
   const [deleting, setDeleting] = useState<{ id: string; title: string } | null>(null);
+  const [assigneeId, setAssigneeId] = useState('');
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
@@ -100,6 +106,7 @@ export default function TasksPage() {
         search: search || undefined,
         status: status || undefined,
         scope,
+        assigneeId: assigneeId || undefined,
         take: 200,
       });
       setTasks(res.tasks);
@@ -109,7 +116,7 @@ export default function TasksPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, status, scope, push]);
+  }, [search, status, scope, assigneeId, push]);
 
   useEffect(() => {
     const t = setTimeout(() => void load(), 250);
@@ -341,8 +348,32 @@ export default function TasksPage() {
             <option value="mine">Mis tareas</option>
             <option value="all">Todas las que puedo ver</option>
           </select>
+          <select
+            className="select"
+            style={{ width: 'auto' }}
+            value={assigneeId}
+            onChange={(e) => setAssigneeId(e.target.value)}
+            title="Ver las tareas asignadas a una persona"
+          >
+            <option value="">Cualquier responsable</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.fullName}
+              </option>
+            ))}
+          </select>
           <span className="tiny muted-2">{tasks.length} de {total}</span>
         </div>
+
+        {/* Aviso de truncado: si hay más filas que las que se piden, hay que
+            decirlo. Sin esto, las tareas que quedan fuera parecen borradas. */}
+        {total > tasks.length ? (
+          <Alert kind="info">
+            Se están mostrando <b>{tasks.length}</b> de <b>{total}</b> tareas (las modificadas más recientemente
+            primero). Afina la búsqueda, cambia el estado o el alcance para ver el resto; las tareas aparecen aquí
+            aunque todavía no tengan tiempo registrado.
+          </Alert>
+        ) : null}
 
         {loading ? (
           <Spinner />
