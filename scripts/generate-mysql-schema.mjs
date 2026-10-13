@@ -54,6 +54,7 @@ const NATIVE_TYPES = {
     locale: 'VarChar(8)',
   },
   AuthSession: { refreshHash: 'VarChar(64)', userAgent: 'VarChar(255)', ip: 'VarChar(64)' },
+  ApiToken: { name: 'VarChar(100)', tokenHash: 'VarChar(64)', prefix: 'VarChar(8)' },
 
   // --- catálogo ---
   Client: { name: 'VarChar(120)', code: 'VarChar(40)', notes: 'Text', locale: 'VarChar(8)' },
