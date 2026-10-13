@@ -20,6 +20,7 @@ import reportRoutes from './routes/reports.routes';
 import billingRoutes from './routes/billing.routes';
 import settingsRoutes from './routes/settings.routes';
 import telegramRoutes from './routes/telegram.routes';
+import apiTokensRoutes from './routes/api-tokens.routes';
 
 /**
  * Construye la aplicacion Fastify: API del panel + webhook de Telegram + SPA.
@@ -123,6 +124,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(billingRoutes, { prefix: '/api/billing' });
   await app.register(settingsRoutes, { prefix: '/api/settings' });
   await app.register(telegramRoutes, { prefix: '/api/telegram' });
+  // Tokens de API personales para autenticación externa.
+  await app.register(apiTokensRoutes, { prefix: '/api/tokens' });
 
   // ---------------------------------------------------------------------
   // SPA (panel web compilado con Vite) — fallback a index.html

@@ -853,6 +853,7 @@ docker compose up -d --build
 | `POST` | `/api/auth/login` · `/refresh` · `/logout` | Sesión |
 | `GET/PATCH` | `/api/auth/me` · `POST /api/auth/change-password` | Perfil propio |
 | `POST` | `/api/auth/telegram/link-code` | Código de vinculación |
+| `GET/POST/DELETE` | `/api/tokens` · `/api/tokens/:id` | **Tokens de API personales**: crear, listar y revocar |
 | `GET/POST/PATCH/DELETE` | `/api/users`, `/api/roles`, `/api/clients`, `/api/projects`, `/api/task-types`, `/api/pending-tasks` | CRUD del catálogo |
 | `GET` | `/api/entries` · `/api/entries/active` | Historial (filtrable por `taskId`) y cronómetro |
 | `GET/POST/PATCH/DELETE` | `/api/tasks` · `/api/tasks/:id` | Tareas (el padre): listado con acumulados, detalle con **sus** registros de tiempo, alta, **edición** y borrado |
@@ -875,7 +876,134 @@ docker compose up -d --build
 
 ---
 
-## 🔒 7. No subir credenciales al repositorio
+## 🔐 7. Tokens de API personales
+
+A partir de esta versión, los usuarios pueden crear **tokens de API personales** para autenticar requests desde asistentes externos, scripts o herramientas sin necesidad de gestionar sesiones JWT rotativas ni exponer contraseñas.
+
+### Características
+
+- **Prefijo reconocible**: todos los tokens tienen el formato `ttt_<32 caracteres aleatorios>`
+- **Almacenamiento seguro**: se guardan hasheados (SHA-256), nunca en texto plano
+- **Heredan permisos**: cada token actúa con los permisos del usuario que lo creó
+- **Respetan el estado de la cuenta**: si el usuario se desactiva, sus tokens dejan de funcionar
+- **Caducidad opcional**: puedes crear tokens que expiren después de un tiempo definido
+- **Registro de uso**: se actualiza `lastUsedAt` en cada autenticación
+- **Revocación instantánea**: eliminar un token lo invalida de inmediato
+
+### Crear y gestionar tokens
+
+1. Accede al panel web → **Mi perfil** → sección **Tokens de API**
+2. Haz clic en **➕ Crear token**
+3. Ponle un nombre descriptivo (ej: "Asistente de IA", "Script de reportes")
+4. Opcionalmente, establece una fecha de caducidad (en días)
+5. **Copia el token inmediatamente** — solo se muestra una vez
+
+Cada token muestra:
+- **Nombre** y prefijo enmascarado (`ttt_••••••`)
+- **Fecha de creación**
+- **Último uso** (se actualiza en cada request autenticado)
+- **Fecha de caducidad** (si se definió)
+
+Para revocar un token, haz clic en **Revocar**. No se puede recuperar; si lo necesitas de nuevo, crea uno nuevo.
+
+### Usar un token en la API
+
+Una vez creado, usa el token en la cabecera `Authorization` de cualquier endpoint que requiera autenticación:
+
+```bash
+# Consultar el cronómetro activo
+curl -H "Authorization: Bearer ttt_abc123..." \
+  https://tu-dominio.com/api/entries/active
+
+# Iniciar una tarea
+curl -X POST -H "Authorization: Bearer ttt_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{"projectId": "proj_123", "title": "Maquetación del login"}' \
+  https://tu-dominio.com/api/entries/start
+
+# Detener el cronómetro
+curl -X POST -H "Authorization: Bearer ttt_abc123..." \
+  https://tu-dominio.com/api/entries/stop
+
+# Listar registros de tiempo de hoy
+curl -H "Authorization: Bearer ttt_abc123..." \
+  "https://tu-dominio.com/api/entries?from=$(date +%Y-%m-%d)T00:00:00Z"
+
+# Consultar clientes
+curl -H "Authorization: Bearer ttt_abc123..." \
+  https://tu-dominio.com/api/clients
+
+# Consultar proyectos de un cliente
+curl -H "Authorization: Bearer ttt_abc123..." \
+  https://tu-dominio.com/api/projects?clientId=client_123
+```
+
+### Endpoints disponibles
+
+Los tokens funcionan en **todos los endpoints** que aceptan autenticación JWT:
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/entries/active` | Consulta el cronómetro actual |
+| `POST` | `/api/entries/start` | Inicia una tarea (`projectId`, `title`, `description`, `taskTypeId`, `taskId`) |
+| `POST` | `/api/entries/pause` | Pausa el cronómetro |
+| `POST` | `/api/entries/resume` | Reanuda el cronómetro |
+| `POST` | `/api/entries/stop` | Detiene y cierra la tarea |
+| `GET` | `/api/entries` | Lista registros de tiempo (filtros: `from`, `to`, `projectId`, `clientId`, `taskId`) |
+| `POST` | `/api/entries` | Crea un registro de tiempo manualmente |
+| `GET` | `/api/clients` | Lista clientes visibles |
+| `GET` | `/api/projects` | Lista proyectos (filtro: `clientId`) |
+| `GET` | `/api/tasks` | Lista tareas (filtros: `projectId`, `clientId`, `status`) |
+| `GET` | `/api/reports/*` | Consulta reportes y estadísticas |
+
+> **Nota de seguridad**: los tokens **no se pueden usar** para gestionar otros tokens, cambiar la contraseña ni revocar sesiones. Esas operaciones requieren autenticación JWT con la contraseña del usuario.
+
+### Seguridad
+
+- El token en texto plano se muestra **solo una vez** al crearlo
+- Se almacena como hash SHA-256 en la base de datos
+- Un token perdido **no se puede recuperar** — hay que revocarlo y crear uno nuevo
+- Los tokens caducados se rechazan automáticamente
+- Si desactivas al usuario, sus tokens dejan de funcionar
+- Todas las operaciones con tokens quedan registradas en `audit_logs`
+
+### Ejemplo de integración con un asistente de IA
+
+```python
+import requests
+
+API_BASE = "https://tu-dominio.com/api"
+TOKEN = "ttt_abc123..."  # Token personal del usuario
+
+headers = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Content-Type": "application/json"
+}
+
+# Iniciar una tarea
+response = requests.post(
+    f"{API_BASE}/entries/start",
+    headers=headers,
+    json={
+        "projectId": "proj_xyz",
+        "title": "Reunión con el cliente",
+        "description": "Revisión de avances del proyecto"
+    }
+)
+print(response.json())
+
+# Consultar el estado actual
+response = requests.get(f"{API_BASE}/entries/active", headers=headers)
+print(response.json())
+
+# Detener la tarea
+response = requests.post(f"{API_BASE}/entries/stop", headers=headers)
+print(response.json())
+```
+
+---
+
+## 🔒 8. No subir credenciales al repositorio
 
 El proyecto incluye una guardia que **bloquea cualquier commit** con credenciales:
 
@@ -895,11 +1023,12 @@ ln -sf ../../scripts/check-secrets.mjs .git/hooks/pre-commit
 
 Además, `.gitignore` ya excluye `.env`, `data/`, `*.db*`, `dist/`, `node_modules/` y los logs. **Nunca** guardes secretos en `docker-compose.yml`, en el `Dockerfile` ni en el `README.md`: van siempre en las variables de entorno (o en la tabla `system_settings`, que los cifra con AES-256-GCM).
 
-## 🔒 8. Notas de seguridad
+## 🔒 9. Notas de seguridad
 
 - Contraseñas con **bcrypt** (10 rondas) y política mínima (8 caracteres, letras y números).
 - **JWT de acceso corto** (12 h por defecto) + **refresh token rotativo** guardado como hash SHA-256 en `auth_sessions`, revocable.
-- Al cambiar la contraseña, desactivar o cambiar de rol a un usuario, **se revocan todas sus sesiones**.
+- **API tokens personales** con prefijo `ttt_`, guardados como hash SHA-256, con caducidad opcional y registro de uso.
+- Al cambiar la contraseña, desactivar o cambiar de rol a un usuario, **se revocan todas sus sesiones** (los API tokens dejan de funcionar si el usuario se desactiva).
 - Los tokens de API (Telegram/OpenAI/GitHub) se guardan **cifrados con AES-256-GCM** y nunca se devuelven en claro al panel (se muestran enmascarados).
 - El webhook de Telegram se valida con `X-Telegram-Bot-Api-Secret-Token`.
 - Todas las acciones sensibles quedan registradas en `audit_logs`.
@@ -907,7 +1036,7 @@ Además, `.gitignore` ya excluye `.env`, `data/`, `*.db*`, `dist/`, `node_module
 
 ---
 
-## 📋 9. Variables de entorno
+## 📋 10. Variables de entorno
 
 Consulta `.env.example` para la lista completa y comentada. Resumen:
 
@@ -938,7 +1067,7 @@ Consulta `.env.example` para la lista completa y comentada. Resumen:
 
 ---
 
-## ✅ 10. Verificación realizada
+## ✅ 11. Verificación realizada
 
 El proyecto se validó de extremo a extremo:
 

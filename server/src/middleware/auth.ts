@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { prisma } from '../db/prisma';
 import { env } from '../config/env';
+import { sha256 } from '../config/crypto';
 
 /** Politica minima de contrasenas. */
 export function validatePasswordStrength(password: string): string | null {
@@ -77,10 +78,23 @@ export async function buildAuthContext(userId: string, sessionId: string): Promi
 }
 
 /**
- * preHandler: exige JWT valido + sesion activa en BD.
+ * preHandler: exige JWT valido + sesion activa en BD, o un API token valido.
  * Uso: { preHandler: [app.authenticate] }
  */
 export async function authenticate(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  // 1. Intentar autenticacion por API token (Authorization: Bearer ttt_...)
+  const authHeader = request.headers.authorization;
+  if (authHeader?.startsWith('Bearer ttt_')) {
+    const token = authHeader.slice(7); // Remove "Bearer "
+    const auth = await authenticateApiToken(token);
+    if (!auth) {
+      return reply.code(401).send({ error: 'Token invalido o expirado', code: 'INVALID_API_TOKEN' });
+    }
+    request.auth = auth;
+    return;
+  }
+
+  // 2. Autenticacion JWT existente
   try {
     const payload = await request.jwtVerify<JwtPayload>();
     if (payload.typ !== 'access') throw new Error('tipo de token invalido');
@@ -97,6 +111,43 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
   } catch {
     return reply.code(401).send({ error: 'No autenticado', code: 'UNAUTHENTICATED' });
   }
+}
+
+/**
+ * Valida un API token y construye el contexto de autenticacion.
+ * Actualiza lastUsedAt y verifica expiracion y estado del usuario.
+ */
+async function authenticateApiToken(token: string): Promise<AuthContext | null> {
+  if (!token || !token.startsWith('ttt_')) return null;
+
+  const tokenHash = sha256(token);
+  const apiToken = await prisma.apiToken.findUnique({
+    where: { tokenHash },
+    include: { user: { include: { role: true } } },
+  });
+
+  if (!apiToken) return null;
+  if (apiToken.expiresAt && apiToken.expiresAt < new Date()) return null;
+  if (!apiToken.user.isActive) return null;
+
+  // Actualizar lastUsedAt de forma asincrona (no bloqueamos la request)
+  prisma.apiToken
+    .update({
+      where: { id: apiToken.id },
+      data: { lastUsedAt: new Date() },
+    })
+    .catch(() => {
+      // Ignoramos errores de actualizacion de lastUsedAt
+    });
+
+  return {
+    userId: apiToken.user.id,
+    email: apiToken.user.email,
+    fullName: apiToken.user.fullName,
+    roleKey: apiToken.user.role.key,
+    permissions: normalizePermissions(apiToken.user.role.permissions),
+    sessionId: apiToken.id, // Usamos el ID del token como sessionId
+  };
 }
 
 /** preHandler factory: exige un permiso concreto. */
