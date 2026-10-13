@@ -32,11 +32,15 @@ COPY tsconfig.json tsconfig.server.json ./
 COPY shared ./shared
 COPY server ./server
 COPY web ./web
+COPY scripts ./scripts
 
 # Prisma Client: se generan los DOS motores. La imagen se queda con SQLite (modo
 # por defecto) y guarda el de MySQL en /prisma-client-mysql; el arranque copia el
 # que corresponda segun DATABASE_URL, sin necesidad de regenerar ni de red.
+# IMPORTANTE: se regenera schema.mysql.prisma antes de generar el cliente para
+# asegurar que tenga todos los modelos actualizados del schema.prisma base.
 RUN mkdir -p /tmp/prisma-mysql \
+ && node scripts/generate-mysql-schema.mjs \
  && npx prisma generate --schema=server/prisma/schema.mysql.prisma \
  && cp -r node_modules/.prisma/client/. /tmp/prisma-mysql/ \
  && npx prisma generate --schema=server/prisma/schema.prisma \

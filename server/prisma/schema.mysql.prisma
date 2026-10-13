@@ -92,6 +92,7 @@ model User {
   tasksCreated    Task[]          @relation("TaskCreatedBy")
   pendingTasks    PendingTask[]
   sessions        AuthSession[]
+  apiTokens       ApiToken[]
   projectMembers  ProjectMember[]
   clientMembers   ClientMember[]
   alertLogs       AlertLog[]
@@ -402,6 +403,26 @@ model AuthSession {
 
   @@index([userId])
   @@map("auth_sessions")
+}
+
+// ---------------------------------------------------------------------------
+//  Personal API Tokens (autenticacion para asistentes externos y APIs)
+// ---------------------------------------------------------------------------
+model ApiToken {
+  id          String    @id @default(cuid()) @db.VarChar(32)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String @db.VarChar(100)
+  tokenHash   String    @unique @db.VarChar(64)
+  prefix      String    @default("ttt_") @db.VarChar(8)
+  expiresAt   DateTime?
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("api_tokens")
 }
 
 // ---------------------------------------------------------------------------
