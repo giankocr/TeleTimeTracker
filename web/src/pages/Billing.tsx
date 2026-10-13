@@ -17,6 +17,7 @@ import {
   type InvoiceGroup,
 } from '../lib/billing';
 import { Alert, Badge, Card, Empty, Field, Modal, RangeSelect, Spinner, StatCard, useToast } from '../components/ui';
+import { ProjectMultiSelect } from '../components/ProjectMultiSelect';
 
 /**
  * FACTURACIÓN
@@ -74,6 +75,12 @@ interface MarkTarget {
    * alcanza también a los tiquetes de esa factura que no están en la vista.
    */
   byInvoice?: boolean;
+  /**
+   * Marcar TODOS los tiquetes de estos proyectos. El servidor resuelve el grupo
+   * (no se manda la lista de ids), así que un proyecto con más tiquetes de los
+   * que caben en la pantalla se marca entero y no a medias.
+   */
+  byProjects?: string[];
   tickets: number;
   seconds: number;
   amount: number;
@@ -89,7 +96,11 @@ export default function BillingPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [preset, setPreset] = useState(searchParams.get('preset') ?? 'all');
   const [clientId, setClientId] = useState(searchParams.get('clientId') ?? '');
-  const [projectId, setProjectId] = useState(searchParams.get('projectId') ?? '');
+  // VARIOS proyectos: la pantalla permite marcar un grupo (por ejemplo, todos
+  // los de un cliente) y facturarlo de una vez.
+  const [projectIds, setProjectIds] = useState<string[]>(
+    (searchParams.get('projectIds') ?? '').split(',').map((v) => v.trim()).filter(Boolean),
+  );
   const [status, setStatus] = useState('ALL');
   const [search, setSearch] = useState('');
   const [invoiceFilter, setInvoiceFilter] = useState('');
@@ -118,9 +129,9 @@ export default function BillingPage() {
         from: preset === 'custom' && from ? fromDateInput(from) : undefined,
         to: preset === 'custom' && to ? fromDateInput(to) : undefined,
         clientId: clientId || undefined,
-        // El proyecto acota la vista a los tiquetes de ESE proyecto: es la forma
-        // de revisar y facturar proyecto por proyecto (p. ej. los de una persona).
-        projectId: projectId || undefined,
+        // Varios proyectos acotan la vista a sus tiquetes: es la forma de revisar
+        // y facturar un grupo de proyectos (p. ej. los de un cliente de una vez).
+        projectIds: projectIds.length ? projectIds.join(',') : undefined,
         billingStatus: status,
         invoiceRef: invoiceFilter || undefined,
         search: search || undefined,
@@ -135,7 +146,7 @@ export default function BillingPage() {
     } finally {
       setLoading(false);
     }
-  }, [preset, from, to, clientId, projectId, status, invoiceFilter, search, push]);
+  }, [preset, from, to, clientId, projectIds, status, invoiceFilter, search, push]);
 
   useEffect(() => {
     const t = setTimeout(() => void load(), 250);
@@ -164,20 +175,20 @@ export default function BillingPage() {
   // el enlace y para que el reporte del cliente se abra con el mismo contexto.
   const changeClient = (value: string) => {
     setClientId(value);
-    // Cambiar de cliente invalida el proyecto elegido (es de otro cliente).
-    setProjectId('');
+    // Cambiar de cliente invalida los proyectos elegidos (son de otro cliente).
+    setProjectIds([]);
     const next = new URLSearchParams(searchParams);
     if (value) next.set('clientId', value);
     else next.delete('clientId');
-    next.delete('projectId');
+    next.delete('projectIds');
     setSearchParams(next, { replace: true });
   };
 
-  const changeProject = (value: string) => {
-    setProjectId(value);
+  const changeProjects = (ids: string[]) => {
+    setProjectIds(ids);
     const next = new URLSearchParams(searchParams);
-    if (value) next.set('projectId', value);
-    else next.delete('projectId');
+    if (ids.length) next.set('projectIds', ids.join(','));
+    else next.delete('projectIds');
     setSearchParams(next, { replace: true });
   };
 
@@ -240,6 +251,28 @@ export default function BillingPage() {
       amount: ticket.chargedAmount ?? ticket.amount ?? 0,
     });
 
+  /**
+   * Acción masiva por proyecto. Los números se toman de los totales que ya
+   * calculó el servidor con los filtros puestos, y coinciden con lo que el
+   * servidor va a marcar: solo los tiquetes que van por el camino natural del
+   * proceso (facturar -> pendientes; cobrar -> facturados).
+   */
+  const cifrasProyectos = (next: 'PENDING' | 'BILLED' | 'PAID') => {
+    const t = data?.totals;
+    return next === 'BILLED'
+      ? { tickets: t?.pendingTickets ?? 0, seconds: t?.pending.seconds ?? 0, amount: t?.pending.amount ?? 0 }
+      : next === 'PAID'
+        ? { tickets: t?.billedTickets ?? 0, seconds: t?.billed.seconds ?? 0, amount: t?.billed.amount ?? 0 }
+        : {
+            tickets: (t?.billedTickets ?? 0) + (t?.paidTickets ?? 0),
+            seconds: (t?.billed.seconds ?? 0) + (t?.paid.seconds ?? 0),
+            amount: (t?.billed.amount ?? 0) + (t?.paid.amount ?? 0),
+          };
+  };
+
+  const markProjects = (next: 'PENDING' | 'BILLED' | 'PAID') =>
+    openMark({ status: next, taskIds: [], byProjects: projectIds, ...cifrasProyectos(next) });
+
   const markInvoice = (invoice: InvoiceGroup, next: 'BILLED' | 'PAID') =>
     openMark({
       status: next,
@@ -256,8 +289,13 @@ export default function BillingPage() {
     setSaving(true);
     try {
       const body: Record<string, unknown> = {
-        // Por factura o por selección: la API acepta las dos formas.
-        ...(mark.byInvoice && mark.invoiceRef ? { invoiceRef: mark.invoiceRef } : { taskIds: mark.taskIds }),
+        // Tres formas de decir a qué tiquetes: los marcados a mano (taskIds), una
+        // factura completa (invoiceRef) o todos los de un grupo de proyectos.
+        ...(mark.byProjects?.length
+          ? { projectIds: mark.byProjects }
+          : mark.byInvoice && mark.invoiceRef
+            ? { invoiceRef: mark.invoiceRef }
+            : { taskIds: mark.taskIds }),
         status: mark.status,
       };
 
@@ -294,10 +332,10 @@ export default function BillingPage() {
     (historical?.seconds ?? 0) > (data?.totals.pending.seconds ?? 0) + 1;
 
   const reportQuery = new URLSearchParams({ preset: preset === 'all' || preset === 'custom' ? 'thisMonth' : preset });
-  if (projectId) reportQuery.set('projectId', projectId);
+  if (projectIds.length) reportQuery.set('projectIds', projectIds.join(','));
   // El reporte se emite por cliente; si solo hay proyecto elegido, se deduce su
   // cliente para no obligar a elegirlo a mano otra vez.
-  const reportClientId = clientId || projects.find((p) => p.id === projectId)?.clientId || '';
+  const reportClientId = clientId || projects.find((p) => p.id === projectIds[0])?.clientId || '';
 
   return (
     <div className="stack">
@@ -384,21 +422,13 @@ export default function BillingPage() {
               </option>
             ))}
           </select>
-          <select
-            className="select"
-            style={{ width: 'auto' }}
-            value={projectId}
-            onChange={(e) => changeProject(e.target.value)}
-            title="Ver y facturar los tiquetes de un solo proyecto"
-          >
-            <option value="">Todos los proyectos</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {/* Con un cliente elegido sobra el nombre del cliente. */}
-                {clientId ? p.name : `${p.name} · ${p.clientName}`}
-              </option>
-            ))}
-          </select>
+          {/* Uno o VARIOS proyectos: lo que se marque aquí acota la lista y,
+              además, habilita la facturación del grupo entero de una vez. */}
+          <ProjectMultiSelect
+            projects={projects.map((p) => ({ id: p.id, name: p.name, clientName: clientId ? null : p.clientName }))}
+            value={projectIds}
+            onChange={changeProjects}
+          />
           <RangeSelect value={preset} onChange={changePreset} options={PERIOD_OPTIONS} />
           <select className="select" style={{ width: 'auto' }} value={status} onChange={(e) => setStatus(e.target.value)}>
             {STATUS_OPTIONS.map((o) => (
@@ -555,32 +585,62 @@ export default function BillingPage() {
           </div>
         )}
 
-        {selected.size > 0 ? (
+        {selected.size > 0 || projectIds.length > 0 ? (
           <div className="bulk-bar" style={{ marginTop: 14 }}>
-            <span className="bulk-count">
-              {selection.count} tiquete(s) seleccionado(s)
-            </span>
-            <span className="tiny muted-2">
-              {formatHoursHuman(selection.seconds)} · {formatMoney(selection.amount, currency)}
-            </span>
+            {selected.size > 0 ? (
+              <>
+                {/* Manda lo que se marcó a mano: es la selección explícita. */}
+                <span className="bulk-count">{selection.count} tiquete(s) seleccionado(s)</span>
+                <span className="tiny muted-2">
+                  {formatHoursHuman(selection.seconds)} · {formatMoney(selection.amount, currency)}
+                </span>
+              </>
+            ) : (
+              <>
+                {/* Sin filas marcadas, el grupo es el de los proyectos elegidos. */}
+                <span className="bulk-count">
+                  {projectIds.length} proyecto(s) · {cifrasProyectos('BILLED').tickets} por facturar
+                </span>
+                <span className="tiny muted-2" title="Solo se tocan los tiquetes que van por el camino natural del proceso.">
+                  pendientes {formatHoursHuman(cifrasProyectos('BILLED').seconds)} ·{' '}
+                  {formatMoney(cifrasProyectos('BILLED').amount, currency)} · por cobrar{' '}
+                  {formatMoney(cifrasProyectos('PAID').amount, currency)}
+                </span>
+              </>
+            )}
             <span className="spacer" />
             {canWrite ? (
               <>
-                <button className="btn btn-sm btn-primary" onClick={() => markSelection('BILLED')}>
+                <button
+                  className="btn btn-sm btn-primary"
+                  disabled={selected.size === 0 && cifrasProyectos('BILLED').tickets === 0}
+                  title="Marca como facturados los tiquetes pendientes del grupo"
+                  onClick={() => (selected.size > 0 ? markSelection('BILLED') : markProjects('BILLED'))}
+                >
                   💵 Marcar facturado
                 </button>
-                <button className="btn btn-sm btn-success" onClick={() => markSelection('PAID')}>
+                <button
+                  className="btn btn-sm btn-success"
+                  disabled={selected.size === 0 && cifrasProyectos('PAID').tickets === 0}
+                  title="Marca como pagados los tiquetes facturados del grupo"
+                  onClick={() => (selected.size > 0 ? markSelection('PAID') : markProjects('PAID'))}
+                >
                   ✓ Marcar pagado
                 </button>
-                <button className="btn btn-sm btn-ghost" onClick={() => markSelection('PENDING')}>
+                <button
+                  className="btn btn-sm btn-ghost"
+                  disabled={selected.size === 0 && cifrasProyectos('PENDING').tickets === 0}
+                  title="Deshace el cobro de los tiquetes facturados o pagados del grupo"
+                  onClick={() => (selected.size > 0 ? markSelection('PENDING') : markProjects('PENDING'))}
+                >
                   ↩ Volver a pendiente
                 </button>
               </>
             ) : (
               <span className="tiny muted-2">🔒 Marcar requiere el permiso billing:write</span>
             )}
-            <button className="btn btn-sm btn-ghost" onClick={() => setSelected(new Set())}>
-              Quitar selección
+            <button className="btn btn-sm btn-ghost" onClick={() => (selected.size > 0 ? setSelected(new Set()) : changeProjects([]))}>
+              {selected.size > 0 ? 'Quitar selección' : 'Quitar proyectos'}
             </button>
           </div>
         ) : null}
@@ -645,11 +705,12 @@ export default function BillingPage() {
       {mark ? (
         <Modal
           title={
-            mark.status === 'BILLED'
+            (mark.status === 'BILLED'
               ? `Facturar ${mark.tickets} tiquete(s)`
               : mark.status === 'PAID'
                 ? `Marcar como pagado ${mark.tickets} tiquete(s)`
-                : `Volver a pendiente ${mark.tickets} tiquete(s)`
+                : `Volver a pendiente ${mark.tickets} tiquete(s)`) +
+            (mark.byProjects?.length ? ` de ${mark.byProjects.length} proyecto(s)` : '')
           }
           onClose={() => (saving ? undefined : setMark(null))}
           footer={
@@ -667,6 +728,20 @@ export default function BillingPage() {
             <span className="small">
               {formatHoursHuman(mark.seconds)} · {formatMoney(mark.amount, currency)}
             </span>
+            {/* En el marcado por proyectos el servidor resuelve el grupo, así que
+                hay que decir exactamente a qué tiquetes va a llegar. */}
+            {mark.byProjects?.length ? (
+              <Alert kind="info">
+                Se aplicará a <b>los {mark.tickets} tiquete(s)</b> que van por el camino natural del proceso en los{' '}
+                <b>{mark.byProjects.length} proyecto(s)</b> seleccionados:{' '}
+                {mark.status === 'BILLED'
+                  ? 'solo los pendientes de facturar.'
+                  : mark.status === 'PAID'
+                    ? 'solo los ya facturados.'
+                    : 'solo los que tienen cobro (facturados o pagados).'}{' '}
+                Los que ya estén en ese estado no se tocan, así que no se re-emiten facturas ni se deshacen pagos.
+              </Alert>
+            ) : null}
             {mark.status === 'PENDING' ? (
               <Alert kind="warning">
                 Esto deshace el cobro: se limpian las fechas, el número de factura y el importe congelado. Los tiquetes
@@ -712,7 +787,7 @@ export default function BillingPage() {
               </>
             ) : null}
 
-            {mark.status !== 'PENDING' ? (
+            {mark.status !== 'PENDING' && !mark.byProjects?.length ? (
               <Field
                 label="Importe por tiquete (opcional)"
                 hint="Déjalo vacío para calcular horas × tarifa. Si lo llenas, ese importe se congela en cada tiquete y sustituye al calculado (útil para tarifas planas)."

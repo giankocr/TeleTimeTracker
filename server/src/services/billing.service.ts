@@ -205,7 +205,8 @@ export interface BillingQuery {
   to?: Date;
   userIds?: string[];
   clientId?: string;
-  projectId?: string;
+  /** Uno o varios proyectos: la pantalla permite marcar un grupo de proyectos. */
+  projectIds?: string[];
   billingStatus?: BillingStatus;
   invoiceRef?: string;
   search?: string;
@@ -265,7 +266,7 @@ export async function billingOverview(query: BillingQuery): Promise<BillingOverv
     ...(query.billingStatus ? { billingStatus: query.billingStatus } : {}),
     ...(query.invoiceRef ? { invoiceRef: query.invoiceRef } : {}),
     ...(query.clientId ? { clientId: query.clientId } : {}),
-    ...(query.projectId ? { projectId: query.projectId } : {}),
+    ...(query.projectIds?.length ? { projectId: { in: query.projectIds } } : {}),
     ...(query.userIds?.length ? { assigneeId: { in: query.userIds } } : {}),
     ...(query.search
       ? {
@@ -432,6 +433,7 @@ export async function billingOverview(query: BillingQuery): Promise<BillingOverv
     where: {
       invoiceRef: { not: null },
       ...(query.clientId ? { clientId: query.clientId } : {}),
+      ...(query.projectIds?.length ? { projectId: { in: query.projectIds } } : {}),
       ...(query.userIds?.length ? { assigneeId: { in: query.userIds } } : {}),
     },
     include: {
@@ -491,7 +493,7 @@ export async function billingOverview(query: BillingQuery): Promise<BillingOverv
     from: query.from,
     to: query.to,
     clientId: query.clientId,
-    projectId: query.projectId,
+    projectIds: query.projectIds,
     userIds: query.userIds,
   });
 
@@ -501,7 +503,7 @@ export async function billingOverview(query: BillingQuery): Promise<BillingOverv
       entryCount: { gt: 0 },
       billingStatus: 'PENDING',
       ...(query.clientId ? { clientId: query.clientId } : {}),
-      ...(query.projectId ? { projectId: query.projectId } : {}),
+      ...(query.projectIds?.length ? { projectId: { in: query.projectIds } } : {}),
       ...(query.userIds?.length ? { assigneeId: { in: query.userIds } } : {}),
     },
     include: { project: { select: { hourlyRate: true } }, client: { select: { hourlyRate: true } } },
@@ -556,7 +558,7 @@ async function unticketedHours(filter: {
   from?: Date;
   to?: Date;
   clientId?: string;
-  projectId?: string;
+  projectIds?: string[];
   userIds?: string[];
 }): Promise<{ seconds: number; hours: number; entries: number }> {
   const entries = await prisma.timeEntry.findMany({
@@ -565,7 +567,7 @@ async function unticketedHours(filter: {
       status: { not: 'CANCELLED' },
       ...(filter.from && filter.to ? { startedAt: { gte: filter.from, lt: filter.to } } : {}),
       ...(filter.clientId ? { clientId: filter.clientId } : {}),
-      ...(filter.projectId ? { projectId: filter.projectId } : {}),
+      ...(filter.projectIds?.length ? { projectId: { in: filter.projectIds } } : {}),
       ...(filter.userIds?.length ? { userId: { in: filter.userIds } } : {}),
     },
     select: { status: true, durationSec: true, startedAt: true },
@@ -584,7 +586,8 @@ export interface StatementQuery {
   to: Date;
   label: string;
   userIds?: string[];
-  projectId?: string;
+  /** Uno o varios proyectos: el documento puede cubrir varios a la vez. */
+  projectIds?: string[];
   /** 'ALL' = sin filtrar por estado de facturación. */
   billingStatus?: BillingStatus | 'ALL';
   /** Incluir las horas de tiquetes ya facturados o pagados. */
@@ -657,8 +660,9 @@ export async function buildClientStatement(query: StatementQuery): Promise<Clien
             { task: { project: { clientId: query.clientId } } },
           ],
         },
-        ...(query.projectId
-          ? [{ OR: [{ projectId: query.projectId }, { task: { projectId: query.projectId } }] }]
+        // El proyecto del tramo puede venir copiado en él o en su tarea.
+        ...(query.projectIds?.length
+          ? [{ OR: [{ projectId: { in: query.projectIds } }, { task: { projectId: { in: query.projectIds } } }] }]
           : []),
       ],
       ...(query.userIds?.length ? { userId: { in: query.userIds } } : {}),

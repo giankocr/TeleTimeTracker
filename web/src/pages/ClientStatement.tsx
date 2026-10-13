@@ -15,6 +15,7 @@ import {
   type StatementEntry,
 } from '../lib/billing';
 import { Alert, Badge, Card, Empty, Field, RangeSelect, Spinner, StatCard, useToast } from '../components/ui';
+import { ProjectMultiSelect } from '../components/ProjectMultiSelect';
 import {
   REPORT_LOCALE_LABEL,
   localeTag,
@@ -68,7 +69,11 @@ export default function ClientStatementPage() {
   const clientId = searchParams.get('clientId') ?? '';
   const preset = searchParams.get('preset') || 'thisMonth';
 
-  const [projectId, setProjectId] = useState('');
+  // Uno o VARIOS proyectos. Llegan en la URL desde Facturación, donde se eligen
+  // como grupo para facturarlos de una vez: el documento cubre ese mismo grupo.
+  const [projectIds, setProjectIds] = useState<string[]>(
+    (searchParams.get('projectIds') ?? '').split(',').map((v) => v.trim()).filter(Boolean),
+  );
   const [billingStatus, setBillingStatus] = useState('ALL');
   // Se incluyen por defecto las horas ya facturadas: un estado de horas que
   // ocultara trabajo entregado y facturado no cuadraría con lo que el cliente vio.
@@ -117,7 +122,7 @@ export default function ClientStatementPage() {
       const data = await api.get<ClientStatement>('/billing/statement', {
         clientId,
         preset,
-        projectId: projectId || undefined,
+        projectIds: projectIds.length ? projectIds.join(',') : undefined,
         billingStatus,
         includeBilled: includeBilled ? 'true' : 'false',
         withEntries: withEntries ? 'true' : undefined,
@@ -131,7 +136,7 @@ export default function ClientStatementPage() {
     } finally {
       setLoading(false);
     }
-  }, [clientId, preset, projectId, billingStatus, includeBilled, withEntries, customFrom, customTo, sinPermiso, customIncompleto, push]);
+  }, [clientId, preset, projectIds, billingStatus, includeBilled, withEntries, customFrom, customTo, sinPermiso, customIncompleto, push]);
 
   // Pequeño retardo: al cambiar selects seguidos (cliente -> proyecto) no se
   // dispara un reporte por cada tecla o clic intermedio.
@@ -155,7 +160,8 @@ export default function ClientStatementPage() {
 
   /** Cambiar de cliente invalida el proyecto: cada proyecto es de un cliente. */
   const changeClient = (value: string) => {
-    setProjectId('');
+    // Cambiar de cliente invalida los proyectos: son de otro cliente.
+    setProjectIds([]);
     patchParams({ clientId: value, preset });
   };
 
@@ -195,7 +201,7 @@ export default function ClientStatementPage() {
       await downloadFile('/billing/statement.csv', `horas_${nombreArchivo}_${preset}.csv`, {
         clientId,
         preset,
-        projectId: projectId || undefined,
+        projectIds: projectIds.length ? projectIds.join(',') : undefined,
         billingStatus,
         includeBilled: includeBilled ? 'true' : 'false',
         ...(preset === 'custom' ? { from: fromDateInput(customFrom), to: fromDateInput(customTo) } : {}),
@@ -262,17 +268,14 @@ export default function ClientStatementPage() {
               />
             </Field>
 
-            <Field label="Proyecto" hint="Solo los proyectos del cliente elegido.">
-              <select className="select" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-                <option value="">Todos los proyectos</option>
-                {projects
+            <Field label="Proyectos" hint="Solo los del cliente elegido. Puedes elegir varios.">
+              <ProjectMultiSelect
+                projects={projects
                   .filter((p) => !clientId || p.clientId === clientId)
-                  .map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-              </select>
+                  .map((p) => ({ id: p.id, name: p.name }))}
+                value={projectIds}
+                onChange={(ids) => setProjectIds(ids)}
+              />
             </Field>
 
             <Field label="Estado de facturación" hint="Útil para emitir solo lo pendiente de cobrar.">

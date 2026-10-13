@@ -29,6 +29,14 @@ import { audit } from '../utils/audit';
  * acceso queda protegido por el permiso explícito (MANAGER y ADMIN), y se puede
  * acotar a una persona con `userId`.
  */
+/**
+ * Tope de tiquetes por marcado masivo. Existe para que un filtro demasiado
+ * amplio (todos los proyectos, todo el historial) no dispare una operacion
+ * enorme por accidente: mejor un error que diga como acotarlo que un minuto de
+ * espera sin saber que esta pasando.
+ */
+const MAX_MASS_MARK = 1000;
+
 export default async function billingRoutes(app: FastifyInstance): Promise<void> {
   const timezoneOf = async (userId: string): Promise<string> => {
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { timezone: true } });
@@ -44,7 +52,9 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
     from: z.string().optional(),
     to: z.string().optional(),
     clientId: z.string().optional(),
+    /** Un proyecto (compatibilidad) o varios: `projectIds=a,b,c`. */
     projectId: z.string().optional(),
+    projectIds: z.string().optional(),
     userId: z.string().optional(),
     billingStatus: z.enum(['ALL', 'PENDING', 'BILLED', 'PAID']).optional(),
     invoiceRef: z.string().max(60).optional(),
@@ -89,6 +99,21 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
   /** Filtro opcional por persona (sobre el responsable del tiquete). */
   const assigneeFilter = (f: Filters): string[] | undefined => (f.userId ? [f.userId] : undefined);
 
+  /**
+   * Proyectos del filtro. Acepta `projectId` (uno) y `projectIds` (varios,
+   * separados por coma) porque el panel permite marcar un GRUPO de proyectos de
+   * una vez, y la API mantiene el parametro antiguo para los enlaces guardados.
+   */
+  const projectFilter = (f: Filters): string[] | undefined => {
+    const lista = [
+      ...(f.projectIds ? f.projectIds.split(',') : []),
+      ...(f.projectId ? [f.projectId] : []),
+    ]
+      .map((id) => id.trim())
+      .filter(Boolean);
+    return lista.length ? [...new Set(lista)] : undefined;
+  };
+
   // -------------------------------------------------------------------------
   // GET /api/billing/overview — cola de trabajo de cobro
   // -------------------------------------------------------------------------
@@ -106,7 +131,7 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
       to: window.to,
       userIds: assigneeFilter(f),
       clientId: f.clientId,
-      projectId: f.projectId,
+      projectIds: projectFilter(f),
       billingStatus: f.billingStatus && f.billingStatus !== 'ALL' ? f.billingStatus : undefined,
       invoiceRef: f.invoiceRef,
       search: f.search,
@@ -134,6 +159,13 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
       .object({
         taskIds: z.array(z.string()).max(1000).optional(),
         invoiceRef: z.string().min(1).max(60).optional(),
+        /**
+         * Marcar TODOS los tiquetes de uno o varios proyectos. El grupo se
+         * resuelve en el servidor (no con lo que el panel tenga en pantalla), asi
+         * que un proyecto con mas tiquetes de los que caben en la lista se marca
+         * entero y no a medias.
+         */
+        projectIds: z.array(z.string()).min(1).max(50).optional(),
         status: z.enum(['PENDING', 'BILLED', 'PAID']),
         /** Nº de factura a asignar al grupo (lo que agrupa varias tareas). */
         invoiceRefNew: z.string().max(60).nullable().optional(),
@@ -142,8 +174,8 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
         /** Importe POR TIQUETE; si se omite se calcula horas x tarifa. */
         amount: z.number().nonnegative().nullable().optional(),
       })
-      .refine((d) => (d.taskIds?.length ?? 0) > 0 || Boolean(d.invoiceRef), {
-        message: 'Indica al menos un tiquete (taskIds) o un nº de factura (invoiceRef)',
+      .refine((d) => (d.taskIds?.length ?? 0) > 0 || Boolean(d.invoiceRef) || (d.projectIds?.length ?? 0) > 0, {
+        message: 'Indica al menos un tiquete (taskIds), un nº de factura (invoiceRef) o uno o varios proyectos (projectIds)',
       })
       .safeParse(request.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Datos invalidos' });
@@ -168,9 +200,33 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
 
     // Los tiquetes se resuelven antes de tocar nada: un id inventado no debe
     // reportarse como "actualizado".
-    const ids = d.invoiceRef
-      ? (await prisma.task.findMany({ where: { invoiceRef: d.invoiceRef }, select: { id: true } })).map((t) => t.id)
-      : [...new Set(d.taskIds ?? [])];
+    let ids: string[];
+    if (d.projectIds?.length) {
+      // Al marcar por proyecto solo se tocan los tiquetes que van por el camino
+      // natural del proceso: facturar mira los PENDIENTES, cobrar los FACTURADOS
+      // y "volver a pendiente" los que tienen cobro. Sin este filtro, un marcado
+      // masivo desharia pagos ya registrados o volveria a emitir facturas.
+      const NATURAL: Record<string, string[]> = {
+        BILLED: ['PENDING'],
+        PAID: ['BILLED'],
+        PENDING: ['BILLED', 'PAID'],
+      };
+      const encontrados = await prisma.task.findMany({
+        where: { projectId: { in: d.projectIds }, billingStatus: { in: NATURAL[d.status] ?? ['PENDING'] } },
+        select: { id: true },
+      });
+      ids = encontrados.map((t) => t.id);
+      if (ids.length > MAX_MASS_MARK) {
+        return reply.code(400).send({
+          error: `El grupo tiene ${ids.length} tiquetes (máximo ${MAX_MASS_MARK} por operación). Acota por cliente o por periodo.`,
+          code: 'TOO_MANY_TASKS',
+        });
+      }
+    } else if (d.invoiceRef) {
+      ids = (await prisma.task.findMany({ where: { invoiceRef: d.invoiceRef }, select: { id: true } })).map((t) => t.id);
+    } else {
+      ids = [...new Set(d.taskIds ?? [])];
+    }
     if (!ids.length) return reply.code(404).send({ error: 'No hay tiquetes que marcar', code: 'NO_TASKS' });
 
     const existentes = await prisma.task.count({ where: { id: { in: ids } } });
@@ -195,7 +251,11 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
         tiquetes: result.taskIds.length,
         factura: d.invoiceRefNew ?? d.invoiceRef ?? null,
         importePorTiquete: d.amount ?? null,
-        seleccion: d.invoiceRef ? `factura:${d.invoiceRef}` : 'tiquetes',
+        seleccion: d.projectIds?.length
+          ? `proyectos:${d.projectIds.join(',')}`
+          : d.invoiceRef
+            ? `factura:${d.invoiceRef}`
+            : 'tiquetes',
       },
     });
 
@@ -234,7 +294,7 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
         to: window.to,
         label: window.label,
         userIds: assigneeFilter(f),
-        projectId: f.projectId,
+        projectIds: projectFilter(f),
         billingStatus: f.billingStatus ?? 'ALL',
         includeBilled: f.includeBilled !== 'false',
         withEntries: f.withEntries === 'true',
@@ -268,7 +328,7 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
         to: window.to,
         label: window.label,
         userIds: assigneeFilter(f),
-        projectId: f.projectId,
+        projectIds: projectFilter(f),
         billingStatus: f.billingStatus ?? 'ALL',
         includeBilled: f.includeBilled !== 'false',
         scope: 'all',
